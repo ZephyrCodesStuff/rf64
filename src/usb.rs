@@ -36,6 +36,10 @@ pub struct MidiClass<'a, B: UsbBus> {
     standard_mc: InterfaceNumber,
     standard_bulkout: EndpointOut<'a, B>,
     standard_bulkin: EndpointIn<'a, B>,
+    
+    read_buf: [u8; 64],
+    read_len: usize,
+    read_pos: usize,
 }
 
 impl<'a, B: UsbBus> MidiClass<'a, B> {
@@ -45,6 +49,9 @@ impl<'a, B: UsbBus> MidiClass<'a, B> {
             standard_mc: alloc.interface(),
             standard_bulkout: alloc.bulk(64),
             standard_bulkin: alloc.bulk(64),
+            read_buf: [0; 64],
+            read_len: 0,
+            read_pos: 0,
         }
     }
 
@@ -57,11 +64,27 @@ impl<'a, B: UsbBus> MidiClass<'a, B> {
     }
 
     pub fn read_packet(&mut self) -> usb_device::Result<[u8; 4]> {
-        let mut buf = [0u8; 4];
-        let bytes_read = self.standard_bulkout.read(&mut buf)?;
+        if self.read_pos + 4 <= self.read_len {
+            let mut buf = [0u8; 4];
+            buf.copy_from_slice(&self.read_buf[self.read_pos..self.read_pos + 4]);
+            self.read_pos += 4;
+            return Ok(buf);
+        }
+
+        let bytes_read = match self.standard_bulkout.read(&mut self.read_buf) {
+            Ok(len) => len,
+            Err(e) => return Err(e),
+        };
+
         if bytes_read >= 4 {
+            self.read_len = bytes_read;
+            self.read_pos = 4;
+            let mut buf = [0u8; 4];
+            buf.copy_from_slice(&self.read_buf[0..4]);
             Ok(buf)
         } else {
+            self.read_len = 0;
+            self.read_pos = 0;
             Err(usb_device::UsbError::WouldBlock)
         }
     }
