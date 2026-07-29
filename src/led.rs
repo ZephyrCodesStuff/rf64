@@ -30,14 +30,14 @@ pub struct Color {
 }
 
 impl Color {
-    pub const BLACK: Color = Color { r: 0, g: 0, b: 0 };
+    pub const BLACK: Self = Self { r: 0, g: 0, b: 0 };
 
     pub const fn new(r: u8, g: u8, b: u8) -> Self {
-        Color { r, g, b }
+        Self { r, g, b }
     }
 
-    pub fn clamp_brightness(self, max_val: u8) -> Color {
-        Color {
+    pub const fn clamp_brightness(self, max_val: u8) -> Self {
+        Self {
             r: if self.r > max_val { max_val } else { self.r },
             g: if self.g > max_val { max_val } else { self.g },
             b: if self.b > max_val { max_val } else { self.b },
@@ -53,7 +53,7 @@ pub struct PhysicalLedBuffer {
 
 impl PhysicalLedBuffer {
     pub const fn new() -> Self {
-        PhysicalLedBuffer {
+        Self {
             leds: [Color::BLACK; TOTAL_LEDS],
         }
     }
@@ -63,7 +63,7 @@ impl PhysicalLedBuffer {
     }
 
     /// Set the two physical LEDs of a button to different colors.
-    pub fn set_button_split(&mut self, button_idx: usize, led0: Color, led1: Color) {
+    pub const fn set_button_split(&mut self, button_idx: usize, led0: Color, led1: Color) {
         if button_idx < NUM_BUTTONS {
             let base_led = button_idx * LEDS_PER_BUTTON;
             self.leds[base_led] = led0.clamp_brightness(SAFE_MAX_BRIGHTNESS);
@@ -140,11 +140,11 @@ pub struct LedDriver {
 }
 
 impl LedDriver {
-    pub fn new() -> Self {
-        LedDriver { _private: () }
+    pub const fn new() -> Self {
+        Self { _private: () }
     }
 
-    /// Transmit strand 0 (LEDs 0..31) on PB6. ~0.96ms. Call poll() after each strand.
+    /// Transmit strand 0 (LEDs 0..31) on PB6. ~0.96ms. Call `poll()` after each strand.
     pub fn send_strand0(&self, buffer: &PhysicalLedBuffer) {
         unsafe {
             for idx in 0..LEDS_PER_STRAND {
@@ -156,7 +156,7 @@ impl LedDriver {
         }
     }
 
-    /// Transmit strand 1 (LEDs 32..63) on PC6. ~0.96ms. Call poll() after each strand.
+    /// Transmit strand 1 (LEDs 32..63) on PC6. ~0.96ms. Call `poll()` after each strand.
     pub fn send_strand1(&self, buffer: &PhysicalLedBuffer) {
         unsafe {
             for idx in 0..LEDS_PER_STRAND {
@@ -168,7 +168,7 @@ impl LedDriver {
         }
     }
 
-    /// Transmit strand 2 (LEDs 64..95) on PB5. ~0.96ms. Call poll() after each strand.
+    /// Transmit strand 2 (LEDs 64..95) on PB5. ~0.96ms. Call `poll()` after each strand.
     pub fn send_strand2(&self, buffer: &PhysicalLedBuffer) {
         unsafe {
             for idx in 0..LEDS_PER_STRAND {
@@ -180,7 +180,7 @@ impl LedDriver {
         }
     }
 
-    /// Transmit strand 3 (LEDs 96..127) on PB4. ~0.96ms. Call poll() after each strand.
+    /// Transmit strand 3 (LEDs 96..127) on PB4. ~0.96ms. Call `poll()` after each strand.
     pub fn send_strand3(&self, buffer: &PhysicalLedBuffer) {
         unsafe {
             for idx in 0..LEDS_PER_STRAND {

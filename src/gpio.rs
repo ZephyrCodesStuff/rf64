@@ -14,25 +14,25 @@ pub struct LedPins {
 
 impl LedPins {
     /// Initialize PB4, PB5, PB6, and PC6 as digital outputs.
-    pub fn init(portb: &PORTB, portc: &PORTC) -> Self {
+    pub fn init(port_b: &PORTB, port_c: &PORTC) -> Self {
         // Set PB4, PB5, PB6 as outputs (DDRB bits 4, 5, 6 = 1)
-        portb
+        port_b
             .ddrb()
             .modify(|r, w| unsafe { w.bits(r.bits() | (1 << 4) | (1 << 5) | (1 << 6)) });
 
         // Set PC6 as output (DDRC bit 6 = 1)
-        portc
+        port_c
             .ddrc()
             .modify(|r, w| unsafe { w.bits(r.bits() | (1 << 6)) });
 
         // Ensure all pins start LOW
-        portb
+        port_b
             .portb()
             .modify(|r, w| unsafe { w.bits(r.bits() & !((1 << 4) | (1 << 5) | (1 << 6))) });
-        portc
+        port_c
             .portc()
             .modify(|r, w| unsafe { w.bits(r.bits() & !(1 << 6)) });
 
-        LedPins { _private: () }
+        Self { _private: () }
     }
 }

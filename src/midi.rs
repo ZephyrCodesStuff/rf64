@@ -1,13 +1,13 @@
 //! MIDI message sending for MIDI Fighter 64.
 //!
 //! Note mapping matches the original C firmware (midi.c / constants.h):
-//!   MIDI_BASENOTE = 36 (C2), button N → note 36 + N
-//!   MIDI_CHANNEL  = 14 (0-indexed on the wire, shown as Ch.15 in DAWs)
-//!   MIDI_VELOCITY = 74
+//!   `MIDI_BASENOTE` = 36 (C2), button N → note 36 + N
+//!   `MIDI_CHANNEL`  = 14 (0-indexed on the wire, shown as Ch.15 in DAWs)
+//!   `MIDI_VELOCITY` = 74
 //!
 //! Debounce strategy (low-latency):
-//!   - NoteOn fires immediately on the FIRST press edge (falling).
-//!   - NoteOff fires immediately on the FIRST release edge (rising).
+//!   - `NoteOn` fires immediately on the FIRST press edge (falling).
+//!   - `NoteOff` fires immediately on the FIRST release edge (rising).
 //!   - Subsequent transitions within the debounce window are ignored.
 
 use usbd_midi::data::{
@@ -20,16 +20,16 @@ use crate::usb::UsbMidiStack;
 
 // ── Constants matching C firmware defaults ────────────────────────────────────
 
-/// MIDI note for button 0 (C2 = 36). Button N → MIDI_BASENOTE + N.
+/// MIDI note for button 0 (C2 = 36). Button N → `MIDI_BASENOTE` + N.
 pub const MIDI_BASENOTE: u8 = 36;
 
 /// MIDI channel (0-indexed wire value). 14 = Channel 15 in DAW display.
 const MIDI_CHANNEL: Channel = Channel::Channel15;
 
-/// Default note-on velocity, matches C firmware G_EE_MIDI_VELOCITY = 74.
+/// Default note-on velocity, matches C firmware `G_EE_MIDI_VELOCITY` = 74.
 const MIDI_VELOCITY: u8 = 74;
 
-/// How many poll() cycles a button must be stable before direction changes.
+/// How many `poll()` cycles a button must be stable before direction changes.
 /// Since each main loop cycle with LED updates takes ~5ms, 2 cycles = ~10ms debounce.
 const DEBOUNCE_CYCLES: u8 = 2;
 
@@ -51,7 +51,7 @@ pub struct ButtonState {
 
 impl ButtonState {
     pub const fn new() -> Self {
-        ButtonState {
+        Self {
             confirmed: [false; 64],
             counter: [0; 64],
         }

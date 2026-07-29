@@ -1,11 +1,11 @@
-//! LUFA DFU Bootloader entry for ATmega32U4.
+//! LUFA DFU Bootloader entry for `ATmega32U4`.
 //!
 //! Matches the logic from `jumptoboot.c` in the original MF64 C firmware.
 
 use crate::delay::delay_ms;
 
 /// The LUFA magic key value (must match jumptoboot.c: 0xDC42ACCA).
-pub const MAGIC_BOOT_KEY: u32 = 0xDC42ACCA;
+pub const MAGIC_BOOT_KEY: u32 = 0xDC42_ACCA;
 
 /// LUFA DFU bootloader word address (byte addr 0x7000 >> 1 = 0x3800).
 const BOOTLOADER_WORD_ADDR: u16 = 0x3800;
@@ -27,7 +27,7 @@ fn clear_mcusr() {
     unsafe { core::ptr::write_volatile(0x54_u16 as *mut u8, 0x00) };
 }
 
-/// Disable the watchdog using the mandatory ATmega32U4 timed write sequence.
+/// Disable the watchdog using the mandatory `ATmega32U4` timed write sequence.
 unsafe fn wdt_disable() {
     unsafe {
         core::arch::asm!(
@@ -40,7 +40,7 @@ unsafe fn wdt_disable() {
     }
 }
 
-/// Enable watchdog with ~250ms timeout using the ATmega32U4 timed write sequence.
+/// Enable watchdog with ~250ms timeout using the `ATmega32U4` timed write sequence.
 unsafe fn wdt_enable_250ms() {
     unsafe {
         core::arch::asm!(
@@ -98,10 +98,11 @@ pub fn jump_to_bootloader() -> ! {
         wdt_enable_250ms();
     }
 
+    #[allow(clippy::empty_loop, reason = "Wait for WDT to reset the MCU")]
     loop {} // Spin until WDT fires
 }
 
 /// Returns `true` if button 0 is held at startup (used to trigger bootloader entry).
-pub fn bootloader_combo_held(key_state: u64) -> bool {
+pub const fn bootloader_combo_held(key_state: u64) -> bool {
     key_state & 0b1 == 0b1
 }

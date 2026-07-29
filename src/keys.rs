@@ -1,9 +1,9 @@
 //! Key matrix reading for MIDI Fighter 64 matching exact C firmware (key.c).
 //!
-//! Pin Assignments on ATmega32U4:
-//! - KEY_CLOCK: PD7 (PORTD bit 7)
-//! - KEY_LATCH: PD6 (PORTD bit 6)
-//! - KEY_BIT:   PC7 (PINC bit 7)
+//! Pin Assignments on `ATmega32U4`:
+//! - `KEY_CLOCK`: PD7 (PORTD bit 7)
+//! - `KEY_LATCH`: PD6 (PORTD bit 6)
+//! - `KEY_BIT`:   PC7 (PINC bit 7)
 
 use core::arch::asm;
 

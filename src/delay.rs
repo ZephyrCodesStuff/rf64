@@ -1,4 +1,4 @@
-//! Delay utilities for 16 MHz ATmega32U4 using atmega_hal.
+//! Delay utilities for 16 MHz `ATmega32U4` using `atmega_hal`.
 
 use atmega_hal::prelude::*;
 

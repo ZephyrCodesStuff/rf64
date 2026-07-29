@@ -45,7 +45,7 @@ fn disable_jtag() {
 }
 
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
+const fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
@@ -115,8 +115,7 @@ fn main() -> ! {
                 let is_off = (cmd == 0x80) || ((cmd == 0x90) && (velocity == 0));
 
                 if (is_on || is_off)
-                    && note >= midi::MIDI_BASENOTE
-                    && note < (midi::MIDI_BASENOTE + 64)
+                    && (midi::MIDI_BASENOTE..(midi::MIDI_BASENOTE + 64)).contains(&note)
                 {
                     let btn = (note - midi::MIDI_BASENOTE) as usize;
                     let color = if is_on {

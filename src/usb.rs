@@ -4,8 +4,8 @@ use usb_device::device::{UsbDevice, UsbDeviceBuilder, UsbVidPid};
 
 pub type TargetUsbBus = atmega_usbd::UsbBus<()>;
 
-/// Enable the 48 MHz USB PLL from the 16 MHz crystal on ATmega32U4.
-/// Matches ATmega32U4 datasheet & LUFA USB_OPT_AUTO_PLL logic.
+/// Enable the 48 MHz USB PLL from the 16 MHz crystal on `ATmega32U4`.
+/// Matches `ATmega32U4` datasheet & LUFA `USB_OPT_AUTO_PLL` logic.
 pub fn init_usb_pll() {
     unsafe {
         // PLLCSR register is at SRAM 0x49 (I/O 0x29)
@@ -25,7 +25,7 @@ pub fn init_usb_pll() {
 pub const VID: u16 = 0x2580; // DJ TechTools
 pub const PID: u16 = 0x0008; // Midi Fighter 64
 
-/// Create a UsbBusAllocator using ATmega32U4 USB_DEVICE peripheral.
+/// Create a `UsbBusAllocator` using `ATmega32U4` `USB_DEVICE` peripheral.
 pub fn create_usb_bus(usb: atmega_hal::pac::USB_DEVICE) -> UsbBusAllocator<TargetUsbBus> {
     atmega_usbd::UsbBus::new(usb)
 }
@@ -36,7 +36,7 @@ pub struct MidiClass<'a, B: UsbBus> {
     standard_mc: InterfaceNumber,
     standard_bulkout: EndpointOut<'a, B>,
     standard_bulkin: EndpointIn<'a, B>,
-    
+
     read_buf: [u8; 64],
     read_len: usize,
     read_pos: usize,
@@ -56,7 +56,7 @@ impl<'a, B: UsbBus> MidiClass<'a, B> {
     }
 
     pub fn send_message(
-        &mut self,
+        &self,
         usb_midi: usbd_midi::data::usb_midi::usb_midi_event_packet::UsbMidiEventPacket,
     ) -> usb_device::Result<usize> {
         let bytes: [u8; 4] = usb_midi.into();
@@ -71,10 +71,7 @@ impl<'a, B: UsbBus> MidiClass<'a, B> {
             return Ok(buf);
         }
 
-        let bytes_read = match self.standard_bulkout.read(&mut self.read_buf) {
-            Ok(len) => len,
-            Err(e) => return Err(e),
-        };
+        let bytes_read = self.standard_bulkout.read(&mut self.read_buf)?;
 
         if bytes_read >= 4 {
             self.read_len = bytes_read;
@@ -230,7 +227,7 @@ impl<'a> UsbMidiStack<'a> {
             .manufacturer("https://github.com/ZephyrCodesStuff/rf64")
             .product("Rusty Fighter 64")
             // .serial_number(r#"¯\_(ツ)_/¯"#)
-            .serial_number(r#"0xDEADBEEF"#)
+            .serial_number(r"0xDEADBEEF")
             .device_class(0x00)
             .device_sub_class(0x00)
             .device_protocol(0x00)
