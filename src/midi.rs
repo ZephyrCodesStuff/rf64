@@ -110,3 +110,60 @@ pub fn process_keys(raw: u64, state: &mut ButtonState, usb: &mut UsbMidiStack) {
         }
     }
 }
+
+/// Process all incoming USB-MIDI packets received from the computer (Host -> Device).
+///
+/// Channel mapping matching official firmware (1-indexed DAWs):
+///   - Channel 3 (wire ch 2): Controls BOTH LEDs on the target button.
+///   - Channel 4 (wire ch 3): Controls the FIRST LED (led0) on the target button.
+///   - Channel 5 (wire ch 4): Controls the SECOND LED (led1) on the target button.
+///
+/// Note number: `MIDI_BASENOTE + btn` (36..99). NoteOn (vel > 0) turns LED(s) ON;
+/// NoteOff (or NoteOn vel == 0) turns LED(s) OFF.
+pub fn process_incoming_midi(
+    usb: &mut UsbMidiStack,
+    host_leds: &mut [crate::led::Color; crate::led::TOTAL_LEDS],
+    strand_colors: &[crate::led::Color; 4],
+) {
+    while let Some(packet) = usb.read_packet() {
+        let status = packet[1];
+        let note = packet[2];
+        let velocity = packet[3];
+
+        let channel = status & 0x0F;
+        let cmd = status & 0xF0;
+
+        let is_on = (cmd == 0x90) && (velocity > 0);
+        let is_off = (cmd == 0x80) || ((cmd == 0x90) && (velocity == 0));
+
+        if is_on || is_off {
+            if note >= MIDI_BASENOTE && note < (MIDI_BASENOTE + 64) {
+                let btn = (note - MIDI_BASENOTE) as usize;
+                let strand = btn / 16;
+                let color = if is_on {
+                    strand_colors[strand]
+                } else {
+                    crate::led::Color::BLACK
+                };
+                let base_led = btn * 2;
+
+                match channel {
+                    2 => {
+                        // Channel 3 (1-indexed): Both LEDs
+                        host_leds[base_led] = color;
+                        host_leds[base_led + 1] = color;
+                    }
+                    3 => {
+                        // Channel 4 (1-indexed): First LED only
+                        host_leds[base_led] = color;
+                    }
+                    4 => {
+                        // Channel 5 (1-indexed): Second LED only
+                        host_leds[base_led + 1] = color;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}

@@ -13,8 +13,8 @@ mod usb;
 use atmega_hal::Peripherals;
 use gpio::LedPins;
 use keys::{key_read_raw, key_setup};
-use led::{Color, LedDriver, NUM_BUTTONS, PhysicalLedBuffer};
-use midi::{ButtonState, process_keys};
+use led::{Color, LedDriver, NUM_BUTTONS, PhysicalLedBuffer, TOTAL_LEDS};
+use midi::{ButtonState, process_incoming_midi, process_keys};
 
 /// Set CPU prescaler to 1 (16 MHz full speed).
 #[inline(always)]
@@ -94,24 +94,27 @@ fn main() -> ! {
         Color::WHITE, // Strand 3 (Buttons 48..63)
     ];
 
+    let mut host_leds: [Color; TOTAL_LEDS] = [Color::BLACK; TOTAL_LEDS];
+
     // -------------------------------------------------------------------------
     // 3. Real-time MIDI scanner & USB event loop
     // -------------------------------------------------------------------------
     loop {
         usb_stack.poll();
 
+        // Process incoming MIDI commands from PC (Channels 3, 4, 5 control LEDs)
+        process_incoming_midi(&mut usb_stack, &mut host_leds, &strand_colors);
+
         let pressed_keys = key_read_raw();
 
         // Send NoteOn/NoteOff immediately on first edge (low-latency debounce)
         process_keys(pressed_keys, &mut btn_state, &mut usb_stack);
 
-        // Light up pressed buttons with strand colors, unpressed buttons remain off (BLACK)
+        // Set buffer directly from host MIDI state (driven by Ableton/host PC)
         buffer.clear();
         for btn in 0..NUM_BUTTONS {
-            if (pressed_keys & (1u64 << btn)) != 0 {
-                let strand = btn / 16;
-                buffer.set_button(btn, strand_colors[strand]);
-            }
+            let base_led = btn * 2;
+            buffer.set_button_split(btn, host_leds[base_led], host_leds[base_led + 1]);
         }
 
         // Interleave USB poll() between each strand write (~0.96ms apart).
