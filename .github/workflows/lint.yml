@@ -15,21 +15,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: nightly
-          profile: minimal
-          components: clippy
-          override: true
+      - name: Install AVR Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-avr avr-libc binutils-avr
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      - name: Install Rust Nightly Toolchain
+        uses: dtolnay/rust-toolchain@nightly
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          components: rust-src, clippy
+
+      - name: Ensure rust-src component
+        run: rustup component add rust-src
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Run cargo clippy (deny warnings + nursery)
         run: |
