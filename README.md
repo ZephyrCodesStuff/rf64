@@ -91,3 +91,15 @@ I've solo-built this project, but I would've never been able to do it without:
 - [Anth](https://github.com/anthonyhfm) for bits of advice on the MF64's hardware, bootloader and firmware.
 
 And lastly, our beloved [Gemini](https://gemini.google.com) for literally carrying this during the black-box debugging of this project.
+
+## 📝 License
+
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
+
+**What this means:**
+- ✅ **You can** use this firmware to build other open source things.
+- ✅ **You can** modify the firmware to suit your needs.
+- 🛑 **You cannot** use this code for network services (although I really doubt you're going to do much with a firmware)
+- 🛑 **If you distribute** modified versions of this firmware, you **must** provide the source code as well.
+
+See [LICENSE](LICENSE) for more details.
