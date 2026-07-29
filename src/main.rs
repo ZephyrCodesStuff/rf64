@@ -7,9 +7,9 @@ mod delay;
 mod gpio;
 mod keys;
 mod led;
+mod usb;
 
 use atmega_hal::Peripherals;
-use delay::delay_ms;
 use gpio::LedPins;
 use keys::{key_read_raw, key_setup};
 use led::{Color, LedDriver, NUM_BUTTONS, PhysicalLedBuffer};
@@ -60,10 +60,16 @@ fn main() -> ! {
     // -------------------------------------------------------------------------
     let dp = Peripherals::take().unwrap();
     let _led_pins = LedPins::init(&dp.PORTB, &dp.PORTC);
-    let pins = atmega_hal::pins!(dp);
 
     // Disable interrupts during initialization to avoid race conditions
     avr_device::interrupt::disable();
+
+    // Initialize 48MHz USB PLL clock and USB bus allocator
+    usb::init_usb_pll();
+    let bus_allocator = usb::create_usb_bus(dp.USB_DEVICE);
+    let mut usb_stack = usb::UsbMidiStack::new(&bus_allocator);
+
+    let pins = atmega_hal::pins!(dp);
 
     // Initialize key matrix pins using HAL pin abstractions
     key_setup(pins.pd7, pins.pd6, pins.pc7);
@@ -86,26 +92,37 @@ fn main() -> ! {
     ];
 
     // -------------------------------------------------------------------------
-    // 3. Real-time button scanner loop
+    // 3. Real-time button scanner & USB event loop
     // -------------------------------------------------------------------------
     loop {
+        // Poll USB between every strand write so the host gets ~1ms response windows
+        // instead of a 4ms blackout (which caused enumeration failure and LED freezes).
+
         let pressed_keys = key_read_raw();
 
         buffer.clear();
-
-        // Scan all 64 buttons
         for btn in 0..NUM_BUTTONS {
             if (pressed_keys & (1u64 << btn)) != 0 {
                 let strand = btn / 16;
                 buffer.set_button(btn, strand_colors[strand]);
             } else {
-                buffer.set_button(btn, Color::new(2, 2, 2)); // Dim white for unpressed
+                buffer.set_button(btn, Color::new(2, 2, 2));
             }
         }
 
-        // Output current LED frame to hardware
-        led_driver.update_display(&buffer);
+        usb_stack.poll();
+        led_driver.send_strand0(&buffer);
 
-        delay_ms(10);
+        usb_stack.poll();
+        led_driver.send_strand1(&buffer);
+
+        usb_stack.poll();
+        led_driver.send_strand2(&buffer);
+
+        usb_stack.poll();
+        led_driver.send_strand3(&buffer);
+
+        // Latch all strands (>50µs LOW pulse resets WS2812 state machine)
+        led_driver.latch_frame();
     }
 }

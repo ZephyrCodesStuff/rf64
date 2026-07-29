@@ -3,3 +3,6 @@
 
 # IDE files
 /.vscode
+
+# macOS metadata
+.DS_Store

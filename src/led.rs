@@ -166,40 +166,57 @@ impl LedDriver {
         LedDriver { _private: () }
     }
 
-    /// Transmit all 128 physical LED colors across all 4 strands in GRB order.
-    pub fn update_display(&self, buffer: &PhysicalLedBuffer) {
-        avr_device::interrupt::free(|_| unsafe {
-            // Group 0: LEDs 0..31 on PB6
+    /// Transmit strand 0 (LEDs 0..31) on PB6. ~0.96ms. Call poll() after each strand.
+    pub fn send_strand0(&self, buffer: &PhysicalLedBuffer) {
+        unsafe {
             for idx in 0..LEDS_PER_STRAND {
                 let color = buffer.leds[idx];
                 send_byte_pb6(color.g);
                 send_byte_pb6(color.r);
                 send_byte_pb6(color.b);
             }
-            // Group 1: LEDs 32..63 on PC6
+        }
+    }
+
+    /// Transmit strand 1 (LEDs 32..63) on PC6. ~0.96ms. Call poll() after each strand.
+    pub fn send_strand1(&self, buffer: &PhysicalLedBuffer) {
+        unsafe {
             for idx in 0..LEDS_PER_STRAND {
                 let color = buffer.leds[LEDS_PER_STRAND + idx];
                 send_byte_pc6(color.g);
                 send_byte_pc6(color.r);
                 send_byte_pc6(color.b);
             }
-            // Group 2: LEDs 64..95 on PB5
+        }
+    }
+
+    /// Transmit strand 2 (LEDs 64..95) on PB5. ~0.96ms. Call poll() after each strand.
+    pub fn send_strand2(&self, buffer: &PhysicalLedBuffer) {
+        unsafe {
             for idx in 0..LEDS_PER_STRAND {
                 let color = buffer.leds[LEDS_PER_STRAND * 2 + idx];
                 send_byte_pb5(color.g);
                 send_byte_pb5(color.r);
                 send_byte_pb5(color.b);
             }
-            // Group 3: LEDs 96..127 on PB4
+        }
+    }
+
+    /// Transmit strand 3 (LEDs 96..127) on PB4. ~0.96ms. Call poll() after each strand.
+    pub fn send_strand3(&self, buffer: &PhysicalLedBuffer) {
+        unsafe {
             for idx in 0..LEDS_PER_STRAND {
                 let color = buffer.leds[LEDS_PER_STRAND * 3 + idx];
                 send_byte_pb4(color.g);
                 send_byte_pb4(color.r);
                 send_byte_pb4(color.b);
             }
-        });
+        }
+    }
 
-        // Latch frame with >50us reset pulse (pins held LOW)
+    /// Latch the frame by holding all lines LOW for >50µs.
+    /// Call this once after all 4 strands are sent.
+    pub fn latch_frame(&self) {
         delay_us(80);
     }
 }
