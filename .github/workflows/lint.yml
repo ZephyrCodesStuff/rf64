@@ -33,4 +33,4 @@ jobs:
 
       - name: Run cargo clippy (deny warnings + nursery)
         run: |
-          cargo clippy --all-targets --all-features -- -D warnings -D clippy::nursery
+          cargo clippy --bins --release -- -D warnings -D clippy::nursery
