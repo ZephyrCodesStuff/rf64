@@ -5,4 +5,15 @@ edition = "2024"
 authors = ["zeph <https://github.com/ZephyrCodesStuff>"]
 
 [dependencies]
+
+# Atmel AVR abstractions
 avr-device = { version = "0.8.1", features = ["atmega32u4", "rt"] }
+atmega-hal = { git = "https://github.com/rahix/avr-hal", branch = "main", features = [
+    "atmega32u4",
+    "rt",
+] }
+
+# USB stack
+usb-device = "0.3.2"
+usbd-hid = "0.10.0"
+usbd-midi = "0.5.1"

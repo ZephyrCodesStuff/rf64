@@ -1,26 +1,33 @@
 //! Key matrix reading for MIDI Fighter 64 matching exact C firmware (key.c).
 //!
 //! Pin Assignments on ATmega32U4:
-//! - KEY_CLOCK: PD7 (I/O address 0x0B, Bit 7)
-//! - KEY_LATCH: PD6 (I/O address 0x0B, Bit 6)
-//! - KEY_BIT:   PC7 (I/O address 0x06 / 0x08, Bit 7)
+//! - KEY_CLOCK: PD7 (PORTD bit 7)
+//! - KEY_LATCH: PD6 (PORTD bit 6)
+//! - KEY_BIT:   PC7 (PINC bit 7)
 
 use core::arch::asm;
 
-/// Initialize key matrix shift register pins.
-/// Matches C key_setup() from official firmware.
-pub fn key_setup() {
-    unsafe {
-        // DDRD is I/O 0x0A: set PD6 (LATCH) and PD7 (CLOCK) as outputs
-        asm!("sbi 0x0a, 7", "sbi 0x0a, 6", options(nomem, nostack));
+// ATmega32U4 I/O Space Register Addresses:
+const PINC_IO: u8 = 0x06;
+const PORTD_IO: u8 = 0x0B;
 
-        // DDRC is I/O 0x07: set PC7 (DATA) as input
-        // PORTC is I/O 0x08: enable pull-up resistor on PC7
-        asm!("cbi 0x07, 7", "sbi 0x08, 7", options(nomem, nostack));
+// Bit indexes
+const CLOCK_BIT: u8 = 7; // PD7
+const LATCH_BIT: u8 = 6; // PD6
+const DATA_BIT: u8 = 7;  // PC7
 
-        // Leave CLOCK (PD7) and LATCH (PD6) HIGH in idle state
-        asm!("sbi 0x0b, 7", "sbi 0x0b, 6", options(nomem, nostack));
-    }
+use atmega_hal::port::mode::{Floating, Input};
+use atmega_hal::port::{Pin, PC7, PD6, PD7};
+
+/// Initialize key matrix shift register pins using safe HAL abstractions.
+pub fn key_setup(
+    clock: Pin<Input<Floating>, PD7>,
+    latch: Pin<Input<Floating>, PD6>,
+    data: Pin<Input<Floating>, PC7>,
+) {
+    let _ = clock.into_output_high();
+    let _ = latch.into_output_high();
+    let _ = data.into_pull_up_input();
 }
 
 /// Read all 64 keys immediately matching exact C firmware key.c algorithm.
@@ -30,42 +37,53 @@ pub fn key_read_raw() -> u64 {
         let mut value: u64 = 0;
         let mut bit: u64 = 1;
 
-        // Shift latch for CD4021BM: 
-        // P/S pin is HIGH for Parallel Load, LOW for Serial Shift.
-        // We pulse HIGH to load, then leave LOW to shift.
-        asm!("sbi 0x0b, 6", options(nomem, nostack));
-        asm!("nop", "nop", options(nomem, nostack));
-        asm!("cbi 0x0b, 6", options(nomem, nostack));
+        // Shift latch pulse for CD4021BM: pulse HIGH then return LOW to shift
+        asm!(
+            "sbi {portd}, {latch}",
+            "nop", "nop",
+            "cbi {portd}, {latch}",
+            portd = const PORTD_IO,
+            latch = const LATCH_BIT,
+            options(nomem, nostack)
+        );
 
         // Shift 64 bits from shift registers
         for _ in 0..64 {
             // Clock falling edge
-            asm!("cbi 0x0b, 7", options(nomem, nostack));
-            
-            // Wait 250ns for the pin to settle
-            asm!("nop", "nop", "nop", "nop", options(nomem, nostack));
+            asm!(
+                "cbi {portd}, {clock}",
+                "nop", "nop", "nop", "nop",
+                portd = const PORTD_IO,
+                clock = const CLOCK_BIT,
+                options(nomem, nostack)
+            );
 
-            // Read PINC (I/O 0x06) bit 7 (PC7). Active LOW: 0 = pressed
+            // Read PINC bit 7 (PC7). Active LOW: 0 = pressed
             let pinc: u8;
-            asm!("in {0}, 0x06", out(reg) pinc, options(nomem, nostack));
+            asm!(
+                "in {0}, {pinc}",
+                out(reg) pinc,
+                pinc = const PINC_IO,
+                options(nomem, nostack)
+            );
 
-            if (pinc & (1 << 7)) == 0 {
+            if (pinc & (1 << DATA_BIT)) == 0 {
                 value |= bit;
             }
             bit <<= 1;
-            
-            // Wait 250ns before rising edge
-            asm!("nop", "nop", "nop", "nop", options(nomem, nostack));
 
             // Clock rising edge (shifts data on CD4021B)
-            asm!("sbi 0x0b, 7", options(nomem, nostack));
-            
-            // Wait 250ns for shift register internal propagation delay before looping
-            asm!("nop", "nop", "nop", "nop", options(nomem, nostack));
+            asm!(
+                "nop", "nop", "nop", "nop",
+                "sbi {portd}, {clock}",
+                "nop", "nop", "nop", "nop",
+                portd = const PORTD_IO,
+                clock = const CLOCK_BIT,
+                options(nomem, nostack)
+            );
         }
 
         // Invert the bits: MF64 buttons are active LOW (0 = pressed).
-        // By bitwise-NOTting the value, 1 = pressed, 0 = unpressed.
         !value
     }
 }

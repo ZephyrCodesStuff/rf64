@@ -6,12 +6,13 @@
 //! - Group 2: PB5 (Bit 5 of PORTB)
 //! - Group 3: PB4 (Bit 4 of PORTB)
 
-use avr_device::atmega32u4::{PORTB, PORTC};
+use atmega_hal::pac::{PORTB, PORTC};
 
 pub struct LedPins {
     _private: (),
 }
 
+#[allow(dead_code)]
 impl LedPins {
     /// Initialize PB4, PB5, PB6, and PC6 as digital outputs.
     pub fn init(portb: &PORTB, portc: &PORTC) -> Self {

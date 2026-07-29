@@ -1,29 +1,15 @@
-//! Delay utilities for 16 MHz ATmega32U4.
+//! Delay utilities for 16 MHz ATmega32U4 using atmega_hal.
 
-use core::arch::asm;
+use atmega_hal::prelude::*;
 
-/// Busy-wait delay for a specified number of microseconds at 16 MHz.
+pub type Delay = atmega_hal::delay::Delay<atmega_hal::clock::MHz16>;
+
 #[inline(always)]
-pub fn delay_us(mut us: u16) {
-    while us > 0 {
-        // At 16 MHz, 1 us = 16 clock cycles.
-        // Loop decrement & branch overhead takes ~6 cycles, 10 NOPs = 16 cycles = 1.0 us.
-        unsafe {
-            asm!(
-                "nop", "nop", "nop", "nop",
-                "nop", "nop", "nop", "nop",
-                "nop", "nop",
-                options(nomem, nostack)
-            );
-        }
-        us -= 1;
-    }
+pub fn delay_us(us: u16) {
+    Delay::new().delay_us(us);
 }
 
-/// Busy-wait delay for a specified number of milliseconds.
 #[inline(always)]
 pub fn delay_ms(ms: u16) {
-    for _ in 0..ms {
-        delay_us(1000);
-    }
+    Delay::new().delay_ms(ms);
 }

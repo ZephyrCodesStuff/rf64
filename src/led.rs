@@ -9,7 +9,6 @@
 //!   - Group 3: PB4 (PORTB bit 4, IO address 0x05)
 
 use crate::delay::delay_us;
-use avr_device::atmega32u4::{PORTB, PORTC};
 use core::arch::asm;
 
 pub const NUM_BUTTONS: usize = 64;
@@ -30,6 +29,7 @@ pub struct Color {
     pub b: u8,
 }
 
+#[allow(dead_code)]
 impl Color {
     pub const BLACK: Color = Color { r: 0, g: 0, b: 0 };
     pub const RED: Color = Color { r: 48, g: 0, b: 0 };
@@ -61,6 +61,7 @@ pub struct PhysicalLedBuffer {
     pub leds: [Color; TOTAL_LEDS],
 }
 
+#[allow(dead_code)]
 impl PhysicalLedBuffer {
     pub const fn new() -> Self {
         PhysicalLedBuffer {
@@ -72,21 +73,18 @@ impl PhysicalLedBuffer {
         self.leds.fill(Color::BLACK);
     }
 
-    pub fn set_button(&mut self, button_idx: usize, color: Color) {
-        if button_idx < NUM_BUTTONS {
-            let safe_color = color.clamp_brightness(SAFE_MAX_BRIGHTNESS);
-            let base_led = button_idx * LEDS_PER_BUTTON;
-            self.leds[base_led] = safe_color;
-            self.leds[base_led + 1] = safe_color;
-        }
-    }
-
+    /// Set the two physical LEDs of a button to different colors.
     pub fn set_button_split(&mut self, button_idx: usize, led0: Color, led1: Color) {
         if button_idx < NUM_BUTTONS {
             let base_led = button_idx * LEDS_PER_BUTTON;
             self.leds[base_led] = led0.clamp_brightness(SAFE_MAX_BRIGHTNESS);
             self.leds[base_led + 1] = led1.clamp_brightness(SAFE_MAX_BRIGHTNESS);
         }
+    }
+
+    /// Shorthand for setting both LEDs of a button to the same color.
+    pub fn set_button(&mut self, button_idx: usize, color: Color) {
+        self.set_button_split(button_idx, color, color);
     }
 
     pub fn set_raw_led(&mut self, led_idx: usize, color: Color) {
@@ -97,120 +95,65 @@ impl PhysicalLedBuffer {
 }
 
 // IO Port addresses on ATmega32U4: PORTB = 0x05, PORTC = 0x08
-// Using direct sbi/cbi instructions guarantees exact 2-cycle WS2812 timing.
+const PORTB_IO: u8 = 0x05;
+const PORTC_IO: u8 = 0x08;
 
+/// Generic WS2812 bit-bang byte transmission for specified I/O PORT and PIN.
+/// Direct sbi/cbi instructions guarantee exact cycle-accurate WS2812 timing.
+///
+/// These cannot be ported to `delay` functions because we need sub-microsecond precision.
 #[inline(always)]
-unsafe fn send_byte_pb6(byte: u8) {
+unsafe fn send_byte_pin<const PORT: u8, const PIN: u8>(byte: u8) {
     let mut mask: u8 = 0x80;
     while mask != 0 {
         if (byte & mask) != 0 {
             // Bit 1: sbi high, wait 6 NOPs (~0.45us), cbi low, wait 10 NOPs (~0.65us)
-            unsafe { 
+            unsafe {
                 asm!(
-                    "sbi 0x05, 6", 
-                    "nop", "nop", "nop", "nop", "nop", "nop", 
-                    "cbi 0x05, 6",
+                    "sbi {port}, {pin}",
+                    "nop", "nop", "nop", "nop", "nop", "nop",
+                    "cbi {port}, {pin}",
                     "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop",
+                    port = const PORT,
+                    pin = const PIN,
                     options(nomem, nostack)
-                ); 
+                );
             }
         } else {
             // Bit 0: sbi high, cbi low immediately (~0.15us), wait 10 NOPs (~0.65us)
-            unsafe { 
+            unsafe {
                 asm!(
-                    "sbi 0x05, 6", 
-                    "cbi 0x05, 6",
+                    "sbi {port}, {pin}",
+                    "cbi {port}, {pin}",
                     "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop",
+                    port = const PORT,
+                    pin = const PIN,
                     options(nomem, nostack)
-                ); 
+                );
             }
         }
         mask >>= 1;
     }
+}
+
+#[inline(always)]
+unsafe fn send_byte_pb6(byte: u8) {
+    unsafe { send_byte_pin::<PORTB_IO, 6>(byte) };
 }
 
 #[inline(always)]
 unsafe fn send_byte_pc6(byte: u8) {
-    let mut mask: u8 = 0x80;
-    while mask != 0 {
-        if (byte & mask) != 0 {
-            unsafe { 
-                asm!(
-                    "sbi 0x08, 6", 
-                    "nop", "nop", "nop", "nop", "nop", "nop", 
-                    "cbi 0x08, 6",
-                    "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop",
-                    options(nomem, nostack)
-                ); 
-            }
-        } else {
-            unsafe { 
-                asm!(
-                    "sbi 0x08, 6", 
-                    "cbi 0x08, 6",
-                    "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop",
-                    options(nomem, nostack)
-                ); 
-            }
-        }
-        mask >>= 1;
-    }
+    unsafe { send_byte_pin::<PORTC_IO, 6>(byte) };
 }
 
 #[inline(always)]
 unsafe fn send_byte_pb5(byte: u8) {
-    let mut mask: u8 = 0x80;
-    while mask != 0 {
-        if (byte & mask) != 0 {
-            unsafe { 
-                asm!(
-                    "sbi 0x05, 5", 
-                    "nop", "nop", "nop", "nop", "nop", "nop", 
-                    "cbi 0x05, 5",
-                    "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop",
-                    options(nomem, nostack)
-                ); 
-            }
-        } else {
-            unsafe { 
-                asm!(
-                    "sbi 0x05, 5", 
-                    "cbi 0x05, 5",
-                    "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop",
-                    options(nomem, nostack)
-                ); 
-            }
-        }
-        mask >>= 1;
-    }
+    unsafe { send_byte_pin::<PORTB_IO, 5>(byte) };
 }
 
 #[inline(always)]
 unsafe fn send_byte_pb4(byte: u8) {
-    let mut mask: u8 = 0x80;
-    while mask != 0 {
-        if (byte & mask) != 0 {
-            unsafe { 
-                asm!(
-                    "sbi 0x05, 4", 
-                    "nop", "nop", "nop", "nop", "nop", "nop", 
-                    "cbi 0x05, 4",
-                    "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop",
-                    options(nomem, nostack)
-                ); 
-            }
-        } else {
-            unsafe { 
-                asm!(
-                    "sbi 0x05, 4", 
-                    "cbi 0x05, 4",
-                    "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop",
-                    options(nomem, nostack)
-                ); 
-            }
-        }
-        mask >>= 1;
-    }
+    unsafe { send_byte_pin::<PORTB_IO, 4>(byte) };
 }
 
 /// Drives WS2812 LED strands on the MIDI Fighter 64 hardware.
@@ -224,7 +167,7 @@ impl LedDriver {
     }
 
     /// Transmit all 128 physical LED colors across all 4 strands in GRB order.
-    pub fn update_display(&self, _portb: &PORTB, _portc: &PORTC, buffer: &PhysicalLedBuffer) {
+    pub fn update_display(&self, buffer: &PhysicalLedBuffer) {
         avr_device::interrupt::free(|_| unsafe {
             // Group 0: LEDs 0..31 on PB6
             for idx in 0..LEDS_PER_STRAND {

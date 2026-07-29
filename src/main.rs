@@ -8,7 +8,7 @@ mod gpio;
 mod keys;
 mod led;
 
-use avr_device::atmega32u4::Peripherals;
+use atmega_hal::Peripherals;
 use delay::delay_ms;
 use gpio::LedPins;
 use keys::{key_read_raw, key_setup};
@@ -46,7 +46,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
-#[avr_device::entry]
+#[atmega_hal::entry]
 fn main() -> ! {
     // -------------------------------------------------------------------------
     // 1. Hardware safeguards: WDT disable, bootloader check, 16 MHz CPU, JTAG disable
@@ -59,10 +59,14 @@ fn main() -> ! {
     // 2. Initialize HAL peripherals, key matrix pins, & LED driver
     // -------------------------------------------------------------------------
     let dp = Peripherals::take().unwrap();
+    let _led_pins = LedPins::init(&dp.PORTB, &dp.PORTC);
+    let pins = atmega_hal::pins!(dp);
+
+    // Disable interrupts during initialization to avoid race conditions
     avr_device::interrupt::disable();
 
-    let _pins = LedPins::init(&dp.PORTB, &dp.PORTC);
-    key_setup();
+    // Initialize key matrix pins using HAL pin abstractions
+    key_setup(pins.pd7, pins.pd6, pins.pc7);
 
     // Check if Button 0 is held down at startup to jump into DFU bootloader
     let initial_keys = key_read_raw();
@@ -100,7 +104,7 @@ fn main() -> ! {
         }
 
         // Output current LED frame to hardware
-        led_driver.update_display(&dp.PORTB, &dp.PORTC, &buffer);
+        led_driver.update_display(&buffer);
 
         delay_ms(10);
     }
