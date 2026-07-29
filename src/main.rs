@@ -87,14 +87,6 @@ fn main() -> ! {
     let mut buffer = PhysicalLedBuffer::new();
     let mut btn_state = ButtonState::new();
 
-    // Colors per strand (all capped at <= 20% max brightness)
-    let strand_colors = [
-        Color::RED,   // Strand 0 (Buttons 0..15)
-        Color::GREEN, // Strand 1 (Buttons 16..31)
-        Color::CYAN,  // Strand 2 (Buttons 32..47)
-        Color::WHITE, // Strand 3 (Buttons 48..63)
-    ];
-
     let mut host_leds: [Color; TOTAL_LEDS] = [Color::BLACK; TOTAL_LEDS];
 
     // -------------------------------------------------------------------------
@@ -127,13 +119,8 @@ fn main() -> ! {
                     && note < (midi::MIDI_BASENOTE + 64)
                 {
                     let btn = (note - midi::MIDI_BASENOTE) as usize;
-                    let strand = btn / 16;
                     let color = if is_on {
-                        if velocity < 128 {
-                            crate::palette::ABLETON_COLORS[velocity as usize]
-                        } else {
-                            strand_colors[strand]
-                        }
+                        crate::palette::ABLETON_COLORS[velocity as usize]
                     } else {
                         crate::led::Color::BLACK
                     };

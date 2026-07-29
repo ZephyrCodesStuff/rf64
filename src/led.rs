@@ -29,18 +29,8 @@ pub struct Color {
     pub b: u8,
 }
 
-#[allow(dead_code)]
 impl Color {
     pub const BLACK: Color = Color { r: 0, g: 0, b: 0 };
-    pub const RED: Color = Color { r: 48, g: 0, b: 0 };
-    pub const GREEN: Color = Color { r: 0, g: 48, b: 0 };
-    pub const BLUE: Color = Color { r: 0, g: 0, b: 48 };
-    pub const WHITE: Color = Color { r: 24, g: 24, b: 24 };
-    pub const CYAN: Color = Color { r: 0, g: 30, b: 30 };
-    pub const MAGENTA: Color = Color { r: 36, g: 0, b: 18 };
-    pub const YELLOW: Color = Color { r: 32, g: 25, b: 0 };
-    pub const ORANGE: Color = Color { r: 40, g: 12, b: 0 };
-    pub const PURPLE: Color = Color { r: 25, g: 7, b: 32 };
 
     pub const fn new(r: u8, g: u8, b: u8) -> Self {
         Color { r, g, b }
@@ -61,7 +51,6 @@ pub struct PhysicalLedBuffer {
     pub leds: [Color; TOTAL_LEDS],
 }
 
-#[allow(dead_code)]
 impl PhysicalLedBuffer {
     pub const fn new() -> Self {
         PhysicalLedBuffer {
@@ -79,17 +68,6 @@ impl PhysicalLedBuffer {
             let base_led = button_idx * LEDS_PER_BUTTON;
             self.leds[base_led] = led0.clamp_brightness(SAFE_MAX_BRIGHTNESS);
             self.leds[base_led + 1] = led1.clamp_brightness(SAFE_MAX_BRIGHTNESS);
-        }
-    }
-
-    /// Shorthand for setting both LEDs of a button to the same color.
-    pub fn set_button(&mut self, button_idx: usize, color: Color) {
-        self.set_button_split(button_idx, color, color);
-    }
-
-    pub fn set_raw_led(&mut self, led_idx: usize, color: Color) {
-        if led_idx < TOTAL_LEDS {
-            self.leds[led_idx] = color.clamp_brightness(SAFE_MAX_BRIGHTNESS);
         }
     }
 }
