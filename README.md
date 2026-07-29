@@ -1,9 +1,28 @@
-# `rf64`
+<div align="center">
 
-Fully Rust-based firmware for the "DJTechTools MIDI Fighter 64" controller.
+  <h1>🦀 <code>rf64</code> 🎹</h1>
+
+  <p>
+    <strong>A completely Rust-based, bare-metal firmware for the MIDI Fighter 64.</strong>
+  </p>
+
+  <p>
+    <a href="https://github.com/ZephyrCodesStuff/rf64/actions"><img src="https://img.shields.io/github/actions/workflow/status/ZephyrCodesStuff/rf64/lint.yml?branch=main&style=flat-square" alt="Build Status"></a>
+    <a href="#license"><img src="https://img.shields.io/badge/license-AGPLv3-blue?style=flat-square" alt="License"></a>
+  </p>
+
+</div>
+
+---
 
 > [!WARNING]
-> This project is still in **very** early development. It is not yet feature-complete, and may not be stable. Use at your own risk.
+> This project is experimental. While it will not brick your MF64, please don't **try flashing it if you're not sure of what you're doing** or don't have the equipment necessary to recover a bricked MCU.
+>
+> If you still do so, friendly reminder that **you are taking full responsibility**. *DJTT's official firmware works great, too!*
+
+## 🌟 Authors
+
+- [@zeph](https://github.com/ZephyrCodesStuff) (that's me!)
 
 ## 🌠 Motivation
 
@@ -20,11 +39,11 @@ The C firmware is already incredibly well-written and feature-complete. However,
 
 The MIDI Fighter 64 is a boutique MIDI controller with the following specifications:
 
-- MCU: Atmel AVR ATmega32U4
-- LEDs: 128x (2x per button) WS2812B individually-addressable RGB LEDs
-- Buttons: 64x SANWA OBSF-30 arcade pushbuttons
-- Shift registers: 8x CD4021BM
-- USB: Full-speed USB 2.0 Type-B
+- **MCU**: Atmel AVR ATmega32U4
+- **LEDs**: 128x (2x per button) WS2812B individually-addressable RGB LEDs
+- **Buttons**: 64x SANWA OBSF-30 arcade pushbuttons
+- **Shift registers**: 8x CD4021BM
+- **USB**: Full-speed USB 2.0 Type-B
 
 ## 🧰 Building
 
@@ -90,7 +109,7 @@ I've solo-built this project, but I would've never been able to do it without:
 - [The Rust Embedded Working Group](https://rust-embedded.org/) and the [avr-rust](https://github.com/avr-rust) people, which allows us to compile Rust code for AVR microcontrollers.
 - [Anth](https://github.com/anthonyhfm) for bits of advice on the MF64's hardware, bootloader and firmware.
 
-And lastly, our beloved [Gemini](https://gemini.google.com) for literally carrying this during the black-box debugging of this project.
+And lastly, our beloved [Gemini](https://gemini.google.com) and [Claude](https://claude.ai) for literally carrying this during the black-box debugging of this project.
 
 ## 📝 License
 
