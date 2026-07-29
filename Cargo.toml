@@ -1,6 +1,6 @@
 [package]
 name = "rf64"
-version = "0.1.0"
+version = "1.0.0"
 description = "Rust-based bare-metal firmware for the DJTechTools MIDI Fighter 64 controller."
 license = "AGPL-3.0"
 edition = "2024"
