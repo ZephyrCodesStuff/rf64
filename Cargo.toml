@@ -1,8 +1,13 @@
 [package]
 name = "rf64"
 version = "0.1.0"
+description = "Rust-based bare-metal firmware for the DJTechTools MIDI Fighter 64 controller."
+license = "AGPL-3.0"
 edition = "2024"
 authors = ["zeph <https://github.com/ZephyrCodesStuff>"]
+repository = "https://github.com/ZephyrCodesStuff/rf64"
+keywords = ["embedded", "avr", "midi", "usb", "atmega32u4"]
+categories = ["embedded", "usb", "midi"]
 
 [dependencies]
 
