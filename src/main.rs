@@ -7,12 +7,14 @@ mod delay;
 mod gpio;
 mod keys;
 mod led;
+mod midi;
 mod usb;
 
 use atmega_hal::Peripherals;
 use gpio::LedPins;
 use keys::{key_read_raw, key_setup};
 use led::{Color, LedDriver, NUM_BUTTONS, PhysicalLedBuffer};
+use midi::{ButtonState, process_keys};
 
 /// Set CPU prescaler to 1 (16 MHz full speed).
 #[inline(always)]
@@ -82,6 +84,7 @@ fn main() -> ! {
 
     let led_driver = LedDriver::new();
     let mut buffer = PhysicalLedBuffer::new();
+    let mut btn_state = ButtonState::new();
 
     // Colors per strand (all capped at <= 20% max brightness)
     let strand_colors = [
@@ -92,24 +95,28 @@ fn main() -> ! {
     ];
 
     // -------------------------------------------------------------------------
-    // 3. Real-time button scanner & USB event loop
+    // 3. Real-time MIDI scanner & USB event loop
     // -------------------------------------------------------------------------
     loop {
-        // Poll USB between every strand write so the host gets ~1ms response windows
-        // instead of a 4ms blackout (which caused enumeration failure and LED freezes).
+        usb_stack.poll();
 
         let pressed_keys = key_read_raw();
 
+        // Send NoteOn/NoteOff immediately on first edge (low-latency debounce)
+        process_keys(pressed_keys, &mut btn_state, &mut usb_stack);
+
+        // Light up pressed buttons with strand colors, unpressed buttons remain off (BLACK)
         buffer.clear();
         for btn in 0..NUM_BUTTONS {
             if (pressed_keys & (1u64 << btn)) != 0 {
                 let strand = btn / 16;
                 buffer.set_button(btn, strand_colors[strand]);
-            } else {
-                buffer.set_button(btn, Color::new(2, 2, 2));
             }
         }
 
+        // Interleave USB poll() between each strand write (~0.96ms apart).
+        // This guarantees macOS gets a steady ~1ms polling window during enumeration
+        // while keeping LED updates smooth and responsive.
         usb_stack.poll();
         led_driver.send_strand0(&buffer);
 
@@ -122,7 +129,6 @@ fn main() -> ! {
         usb_stack.poll();
         led_driver.send_strand3(&buffer);
 
-        // Latch all strands (>50µs LOW pulse resets WS2812 state machine)
         led_driver.latch_frame();
     }
 }
