@@ -1,0 +1,30 @@
+[build]
+target = "avr-none"
+rustflags = ["-C", "target-cpu=atmega32u4"]
+
+[unstable]
+build-std = ["core"]
+
+[profile.dev]
+panic = "abort"
+lto = true
+opt-level = "s"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+# debug = true
+lto = true
+opt-level = "s"
+
+[target.avr-none]
+rustflags = [
+    "-C",
+    "linker=avr-gcc",
+    "-C",
+    "linker-flavor=gcc",
+    "-C",
+    "target-cpu=atmega32u4",
+    "-C",
+    "link-arg=-mmcu=atmega32u4",
+] # Now using fully-fledged avr-gcc and avr-libc

@@ -1,0 +1,8 @@
+[package]
+name = "rf64"
+version = "0.1.0"
+edition = "2024"
+authors = ["zeph <https://github.com/ZephyrCodesStuff>"]
+
+[dependencies]
+avr-device = { version = "0.8.1", features = ["atmega32u4", "rt"] }
