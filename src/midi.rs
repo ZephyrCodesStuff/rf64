@@ -27,7 +27,7 @@ pub const MIDI_BASENOTE: u8 = 36;
 const MIDI_CHANNEL: Channel = Channel::Channel15;
 
 /// Default note-on velocity, matches C firmware `G_EE_MIDI_VELOCITY` = 74.
-const MIDI_VELOCITY: u8 = 74;
+const MIDI_VELOCITY: u8 = 127;
 
 /// How many `poll()` cycles a button must be stable before direction changes.
 /// Since each main loop cycle with LED updates takes ~5ms, 2 cycles = ~10ms debounce.
@@ -101,9 +101,17 @@ pub fn process_keys(raw: u64, state: &mut ButtonState, usb: &mut UsbMidiStack) {
                 let packet = UsbMidiEventPacket {
                     cable_number: CableNumber::Cable0,
                     message: if pressed {
-                        Message::NoteOn(MIDI_CHANNEL, note_from_u8(note_num), U7::from_clamped(MIDI_VELOCITY))
+                        Message::NoteOn(
+                            MIDI_CHANNEL,
+                            note_from_u8(note_num),
+                            U7::from_clamped(MIDI_VELOCITY),
+                        )
                     } else {
-                        Message::NoteOff(MIDI_CHANNEL, note_from_u8(note_num), U7::from_clamped(MIDI_VELOCITY))
+                        Message::NoteOff(
+                            MIDI_CHANNEL,
+                            note_from_u8(note_num),
+                            U7::from_clamped(MIDI_VELOCITY),
+                        )
                     },
                 };
                 if usb.midi.send_message(packet).is_ok() {

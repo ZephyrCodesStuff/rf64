@@ -146,14 +146,16 @@ fn main() -> ! {
                 let is_off = (cmd == 0x80) || ((cmd == 0x90) && (velocity == 0));
                 let is_cc = cmd == 0xB0;
 
-                // Handle MIDI Panic / All Notes Off (CC 123) sent when playback stops
+                // Handle MIDI Panic / All Notes Off (CC 123) sent when playback stops.
+                // Do NOT break here: CC 123 arrives at the END of a potentially large
+                // backlogged burst. If we break immediately, we abandon all the remaining
+                // queued frames and the animation cuts off prematurely. Instead, just
+                // clear host_leds and keep draining until the buffer is truly empty.
                 if is_cc && note == 123 {
                     for led in host_leds.iter_mut() {
                         *led = crate::led::Color::BLACK;
                     }
                     dirty = true;
-                    force_draw = true;
-                    break;
                 } else if (is_on || is_off)
                     && (midi::MIDI_BASENOTE..(midi::MIDI_BASENOTE + 64)).contains(&note)
                 {
