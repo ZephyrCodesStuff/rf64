@@ -92,21 +92,25 @@ pub fn process_keys(raw: u64, state: &mut ButtonState, usb: &mut UsbMidiStack) {
             state.confirmed[btn] = pressed;
             state.counter[btn] = DEBOUNCE_CYCLES;
 
-            let note = note_from_u8(MIDI_BASENOTE + btn as u8);
-            let vel = U7::from_clamped(MIDI_VELOCITY);
-            let message = if pressed {
-                Message::NoteOn(MIDI_CHANNEL, note, vel)
-            } else {
-                Message::NoteOff(MIDI_CHANNEL, note, vel)
-            };
+            let note_num = MIDI_BASENOTE + btn as u8;
 
-            let packet = UsbMidiEventPacket {
-                cable_number: CableNumber::Cable0,
-                message,
-            };
-
-            // Ignore send errors (e.g. endpoint not yet ready during enumeration)
-            usb.midi.send_message(packet).ok();
+            // Retry a few times if the TX endpoint is busy (e.g. simultaneous
+            // button releases filling the FIFO). Silently dropping NoteOffs
+            // causes LEDs to stay lit in the host DAW.
+            for _ in 0..4u8 {
+                let packet = UsbMidiEventPacket {
+                    cable_number: CableNumber::Cable0,
+                    message: if pressed {
+                        Message::NoteOn(MIDI_CHANNEL, note_from_u8(note_num), U7::from_clamped(MIDI_VELOCITY))
+                    } else {
+                        Message::NoteOff(MIDI_CHANNEL, note_from_u8(note_num), U7::from_clamped(MIDI_VELOCITY))
+                    },
+                };
+                if usb.midi.send_message(packet).is_ok() {
+                    break;
+                }
+                usb.poll(); // flush the TX endpoint and retry
+            }
         }
     }
 }
