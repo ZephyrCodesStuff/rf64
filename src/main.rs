@@ -161,23 +161,47 @@ fn main() -> ! {
         let pressed_keys = key_read_raw();
         process_keys(pressed_keys, &mut btn_state, &mut usb_stack);
 
+        // --- Dynamic Power & Brightness Limiting ---
+        let mut total_sum: u32 = 0;
+        let mut max_component: u8 = 0;
+        for c in host_leds.iter() {
+            total_sum += c.r as u32 + c.g as u32 + c.b as u32;
+            if c.r > max_component { max_component = c.r; }
+            if c.g > max_component { max_component = c.g; }
+            if c.b > max_component { max_component = c.b; }
+        }
+
+        let power_scale = if total_sum > led::SAFE_MAX_COLOR_SUM {
+            ((led::SAFE_MAX_COLOR_SUM * 256) / total_sum) as u16
+        } else {
+            256
+        };
+
+        let bright_scale = if max_component > led::SAFE_MAX_PIXEL_COMPONENT {
+            (led::SAFE_MAX_PIXEL_COMPONENT as u16 * 256) / max_component as u16
+        } else {
+            256
+        };
+
+        let final_scale = if power_scale < bright_scale { power_scale } else { bright_scale };
+
         // Draw the fully stable frame (~1.95 ms total, down from ~3.92 ms).
         //
         // Step 1: Pre-compute 768 PORTB mid-phase masks from host_leds (no timing
-        //         constraints — pure Rust, ~0.05 ms).
+        //         constraints — pure Rust, ~0.05 ms). Applies final_scale.
         // Step 2: Drive strands 0 (PB6), 2 (PB5), 3 (PB4) simultaneously via a
         //         single `out PORTB` per WS2812 phase (~0.91 ms for all three).
-        // Step 3: Drive strand 1 (PC6) sequentially as before (~0.96 ms).
+        // Step 3: Drive strand 1 (PC6) sequentially as before (~0.96 ms). Applies final_scale.
         //
         // USB hardware FIFO buffers incoming packets during WS2812 transmission.
         // Safety: PAR_BUF is only accessed here in the single-threaded main loop.
         let par_buf = unsafe { &mut *core::ptr::addr_of_mut!(PAR_BUF) };
-        led::fill_parallel_buffer_into(par_buf, &host_leds);
+        led::fill_parallel_buffer_into(par_buf, &host_leds, final_scale);
 
         led_driver.send_portb_parallel(par_buf); // strands 0, 2, 3 in parallel
         usb_stack.poll(); // Keep USB alive between the two transmission passes
 
-        led_driver.send_strand1(&host_leds[LEDS_PER_STRAND..LEDS_PER_STRAND * 2]);
+        led_driver.send_strand1(&host_leds[LEDS_PER_STRAND..LEDS_PER_STRAND * 2], final_scale);
         usb_stack.poll();
 
         led_driver.latch_frame();

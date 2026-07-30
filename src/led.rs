@@ -45,8 +45,11 @@ pub const LEDS_PER_STRAND: usize = BUTTONS_PER_STRAND * LEDS_PER_BUTTON; // 32 L
 pub const NUM_STRANDS: usize = 4;
 pub const TOTAL_LEDS: usize = LEDS_PER_STRAND * NUM_STRANDS; // 128 LEDs total
 
-/// Default safe brightness limit matching C firmware (`MAX_BRIGHTNESS = 48` / ~19% max).
-pub const SAFE_MAX_BRIGHTNESS: u8 = 48;
+/// Max color units (R+G+B) across all 128 LEDs to keep power draw under ~450mA total.
+pub const SAFE_MAX_COLOR_SUM: u32 = 6200;
+
+/// Max brightness for a single color channel (approx 30% of 255) to avoid blinding.
+pub const SAFE_MAX_PIXEL_COMPONENT: u8 = 76;
 
 /// Represents an RGB color value (0–255 per channel).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -63,11 +66,18 @@ impl Color {
         Self { r, g, b }
     }
 
-    pub const fn clamp_brightness(self, max_val: u8) -> Self {
+    /// Dynamically scale brightness by a fraction (scale / 256).
+    /// If an original color channel was > 0, we ensure it never rounds down to 0,
+    /// so that very dim colors aren't entirely extinguished by scaling.
+    pub const fn scale_brightness(self, scale: u16) -> Self {
+        let sr = (self.r as u16 * scale) >> 8;
+        let sg = (self.g as u16 * scale) >> 8;
+        let sb = (self.b as u16 * scale) >> 8;
+
         Self {
-            r: if self.r > max_val { max_val } else { self.r },
-            g: if self.g > max_val { max_val } else { self.g },
-            b: if self.b > max_val { max_val } else { self.b },
+            r: if self.r > 0 && sr == 0 { 1 } else { sr as u8 },
+            g: if self.g > 0 && sg == 0 { 1 } else { sg as u8 },
+            b: if self.b > 0 && sb == 0 { 1 } else { sb as u8 },
         }
     }
 }
@@ -110,14 +120,14 @@ impl ParallelBitBuffer {
 /// - Strand 1 (PC6):        `host_leds[ 32 ..  64]`  ← handled separately
 /// - Strand 2 (PB5, bit 5): `host_leds[ 64 ..  96]`
 /// - Strand 3 (PB4, bit 4): `host_leds[ 96 .. 128]`
-pub fn fill_parallel_buffer_into(buf: &mut ParallelBitBuffer, host_leds: &[Color; TOTAL_LEDS]) {
+pub fn fill_parallel_buffer_into(buf: &mut ParallelBitBuffer, host_leds: &[Color; TOTAL_LEDS], scale: u16) {
     let mut idx = 0usize;
 
     for led_pos in 0..LEDS_PER_STRAND {
-        // Clamp brightness on the three PORTB strands.
-        let c0 = host_leds[led_pos].clamp_brightness(SAFE_MAX_BRIGHTNESS);
-        let c2 = host_leds[LEDS_PER_STRAND * 2 + led_pos].clamp_brightness(SAFE_MAX_BRIGHTNESS);
-        let c3 = host_leds[LEDS_PER_STRAND * 3 + led_pos].clamp_brightness(SAFE_MAX_BRIGHTNESS);
+        // Scale brightness dynamically.
+        let c0 = host_leds[led_pos].scale_brightness(scale);
+        let c2 = host_leds[LEDS_PER_STRAND * 2 + led_pos].scale_brightness(scale);
+        let c3 = host_leds[LEDS_PER_STRAND * 3 + led_pos].scale_brightness(scale);
 
         // WS2812 wire order: G → R → B.
         for (b0, b2, b3) in [(c0.g, c2.g, c3.g), (c0.r, c2.r, c3.r), (c0.b, c2.b, c3.b)] {
@@ -286,10 +296,10 @@ impl LedDriver {
     ///
     /// Accepts a slice of exactly [`LEDS_PER_STRAND`] (32) colours, brightness-clamped
     /// internally. Pass `&host_leds[LEDS_PER_STRAND..LEDS_PER_STRAND * 2]`.
-    pub fn send_strand1(&self, leds: &[Color]) {
+    pub fn send_strand1(&self, leds: &[Color], scale: u16) {
         unsafe {
             for color in leds {
-                let color = color.clamp_brightness(SAFE_MAX_BRIGHTNESS);
+                let color = color.scale_brightness(scale);
                 send_byte_pc6(color.g);
                 send_byte_pc6(color.r);
                 send_byte_pc6(color.b);
