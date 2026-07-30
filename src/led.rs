@@ -7,32 +7,6 @@
 //!   - Strand 2: PB5 (PORTB bit 5, IO 0x05)  ├─ sent in PARALLEL via `out PORTB`
 //!   - Strand 3: PB4 (PORTB bit 4, IO 0x05)  ┘
 //!   - Strand 1: PC6 (PORTC bit 6, IO 0x08)  ──── sent sequentially
-//!
-//! # Parallel PORTB Transmission
-//!
-//! Strands 0, 2, and 3 all share PORTB (bits 6, 5, 4). The AVR `out` instruction
-//! writes all 8 bits of a port register in **1 cycle** — cheaper than `sbi`/`cbi`
-//! (2 cycles each) and, crucially, it sets all three lines simultaneously.
-//!
-//! Each WS2812 bit period has three phases:
-//! ```text
-//! Phase 1: out PORTB, 0x70   → PB6 | PB5 | PB4 go HIGH simultaneously
-//! Phase 2: out PORTB, mid    → only the 1-bit strands stay HIGH
-//! Phase 3: out PORTB, 0x00   → all three pulled LOW
-//! ```
-//!
-//! The `mid` value changes every bit. Pre-computing all 768 of them (32 LEDs ×
-//! 3 bytes × 8 bits) into a `ParallelBitBuffer` before the timing window opens
-//! keeps the transmission loop to pure `out` + `ld` + `nop` — zero arithmetic
-//! inside the timing-critical section.
-//!
-//! ## Resulting frame timing:
-//! | Phase               | Before   | After     |
-//! |---------------------|----------|-----------|
-//! | PORTB strands 0,2,3 | ~2.88 ms | ~0.91 ms  |
-//! | PC6 strand 1        | ~0.96 ms | ~0.96 ms  |
-//! | Latch               | ~0.08 ms | ~0.08 ms  |
-//! | **Total LED phase** | **~3.92 ms** | **~1.95 ms** |
 
 use crate::delay::delay_us;
 use core::arch::asm;
@@ -79,6 +53,9 @@ impl Color {
         g: 80,
         b: 0,
     };
+
+    /// Used for panic handler red checkerboard indicator.
+    pub const RED: Self = Self { r: 255, g: 0, b: 0 };
 
     pub const fn new(r: u8, g: u8, b: u8) -> Self {
         Self { r, g, b }
@@ -277,7 +254,7 @@ unsafe fn send_byte_pin<const PORT: u8, const PIN: u8>(byte: u8) {
 }
 
 #[inline(always)]
-unsafe fn send_byte_pc6(byte: u8) {
+pub(crate) unsafe fn send_byte_pc6(byte: u8) {
     unsafe { send_byte_pin::<PORTC_IO, 6>(byte) };
 }
 
@@ -393,6 +370,88 @@ impl LedDriver {
         );
         usb_stack.poll();
 
+        self.latch_frame();
+    }
+
+    /// Send a fixed checkerboard pattern of `color` (on even buttons) and BLACK (on odd buttons).
+    ///
+    /// This is used for internal states of the firmware:
+    /// - Bootloader entry: ORANGE checkerboard
+    /// - Panic handler: RED checkerboard
+    pub fn send_checkerboard_direct(&self, par_buf: &mut ParallelBitBuffer, color: Color) {
+        // Pre-compute scaled colour bytes (GRB wire order for WS2812).
+        // For a 32-LED checkerboard at 16 ON buttons × 2 LEDs × R=255:
+        // total = 16 * 2 * 255 = 8160 units. Apply the same power cap as normal.
+        //
+        // Simple fixed scale: 16 ON buttons × 2 LEDs × (r+g+b) vs SAFE_MAX_COLOR_SUM.
+        let num_on_leds: u32 = 32; // 16 buttons ON × 2 LEDs each per strand pair
+        let per_led_sum = color.r as u32 + color.g as u32 + color.b as u32;
+        let total_sum = per_led_sum * num_on_leds;
+        let scale: u16 = if total_sum > SAFE_MAX_COLOR_SUM {
+            ((SAFE_MAX_COLOR_SUM as u32 * 256) / total_sum) as u16
+        } else {
+            256
+        };
+        let c = color.scale_brightness(scale);
+
+        // Fill par_buf for strands 0, 2, 3 simultaneously (PORTB parallel).
+        // Each mask byte: bit6=strand0, bit5=strand2, bit4=strand3, for the same LED position.
+        let mut idx = 0usize;
+        for led_pos in 0..LEDS_PER_STRAND {
+            let btn_in_strand = led_pos / 2; // 0..15
+
+            // Strand 0: global button = 0..15 (rows 0-1, row = btn/8, col = btn%8)
+            let btn0 = btn_in_strand; // buttons 0..15
+            let on0 = (btn0 / 8 + btn0 % 8) % 2 == 0;
+            let (g0, r0, b0) = if on0 {
+                (c.g, c.r, c.b)
+            } else {
+                (0u8, 0u8, 0u8)
+            };
+
+            // Strand 2: global button = 32..47 (rows 4-5)
+            let btn2 = 32 + btn_in_strand;
+            let on2 = (btn2 / 8 + btn2 % 8) % 2 == 0;
+            let (g2, r2, b2) = if on2 {
+                (c.g, c.r, c.b)
+            } else {
+                (0u8, 0u8, 0u8)
+            };
+
+            // Strand 3: global button = 48..63 (rows 6-7)
+            let btn3 = 48 + btn_in_strand;
+            let on3 = (btn3 / 8 + btn3 % 8) % 2 == 0;
+            let (g3, r3, b3) = if on3 {
+                (c.g, c.r, c.b)
+            } else {
+                (0u8, 0u8, 0u8)
+            };
+
+            // Fill the 24 mask bytes for this LED position (8 bits × 3 WS2812 bytes) into par_buf.
+            for (b0v, b2v, b3v) in [(g0, g2, g3), (r0, r2, r3), (b0, b2, b3)] {
+                for bit in (0..8u8).rev() {
+                    par_buf.masks[idx] =
+                        ((b0v >> bit) & 1) << 6 | ((b2v >> bit) & 1) << 5 | ((b3v >> bit) & 1) << 4;
+                    idx += 1;
+                }
+            }
+        }
+        self.send_portb_parallel(par_buf);
+
+        // Send strand 1 (PC6) sequentially
+        unsafe {
+            for led_pos in 0..LEDS_PER_STRAND {
+                let btn_in_strand = led_pos / 2;
+                let btn1 = 16 + btn_in_strand;
+                let on1 = (btn1 / 8 + btn1 % 8) % 2 == 0;
+                let (g, r, b) = if on1 { (c.g, c.r, c.b) } else { (0, 0, 0) };
+                send_byte_pc6(g);
+                send_byte_pc6(r);
+                send_byte_pc6(b);
+            }
+        }
+
+        // Display the frame
         self.latch_frame();
     }
 }

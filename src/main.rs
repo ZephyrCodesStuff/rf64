@@ -21,9 +21,31 @@ use mcu::init_hardware_safeguards;
 use midi::{ButtonState, MidiRx, process_keys};
 
 #[panic_handler]
-const fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    // Ensure GPIO direction registers for LED strands are outputs (PB6, PB5, PB4, PC6).
+    // This is safe to do even if LedPins::init() already ran — idempotent.
+    unsafe {
+        core::arch::asm!(
+            "sbi 0x04, 6", // DDRB bit 6 (strand 0)
+            "sbi 0x04, 5", // DDRB bit 5 (strand 2)
+            "sbi 0x04, 4", // DDRB bit 4 (strand 3)
+            "sbi 0x07, 6", // DDRC bit 6 (strand 1)
+            options(nomem, nostack)
+        );
+    }
+
+    // Reuse the existing PAR_BUF static (768 bytes, already in BSS).
+    // send_checkerboard_direct uses zero additional stack for LED data.
+    let par_buf = unsafe { &mut *core::ptr::addr_of_mut!(PAR_BUF) };
+    let led_driver = LedDriver::new();
+    led_driver.send_checkerboard_direct(par_buf, Color::RED);
+
+    #[allow(clippy::empty_loop, reason = "Panic handler should never return")]
+    loop {
+        core::hint::spin_loop();
+    }
 }
+
 
 /// Parallel bit buffer for strands 0, 2, 3 (PORTB).
 ///
@@ -34,6 +56,10 @@ static mut PAR_BUF: led::ParallelBitBuffer = led::ParallelBitBuffer::new();
 
 #[atmega_hal::entry]
 fn main() -> ! {
+    // 0. Disable interrupts immediately! LUFA bootloader may leave them enabled, 
+    //    causing immediate resets or breaking WDT disable timing.
+    avr_device::interrupt::disable();
+
     // -------------------------------------------------------------------------
     // 1. Low-level hardware safeguards (WDT disable, bootloader check, 16 MHz, JTAG disable)
     // -------------------------------------------------------------------------
@@ -45,9 +71,6 @@ fn main() -> ! {
     let dp = Peripherals::take().unwrap();
     let _led_pins = LedPins::init(&dp.PORTB, &dp.PORTC);
 
-    // Disable interrupts during initialization to avoid race conditions
-    avr_device::interrupt::disable();
-
     // Initialize 48MHz USB PLL clock and USB bus allocator
     usb::init_usb_pll();
     let bus_allocator = usb::create_usb_bus(dp.USB_DEVICE);
@@ -56,29 +79,27 @@ fn main() -> ! {
     let pins = atmega_hal::pins!(dp);
     key_setup(pins.pd7, pins.pd6, pins.pc7);
 
+    // Give hardware (WS2812 LEDs and CD4021B shift registers) a moment to stabilize 
+    // their power state before we read keys or blast LED data.
+    crate::delay::delay_ms(50);
+
     let led_driver = LedDriver::new();
     let midi_rx = MidiRx::new();
 
-    // Jump into DFU bootloader if Button 0 is held down at startup
     let initial_keys = key_read_raw();
+
+    // Jump into DFU bootloader if Button 0 (bit 0) is held down at startup
     if bootloader::bootloader_combo_held(initial_keys) {
-        let mut boot_leds = [Color::BLACK; TOTAL_LEDS];
-
-        // Checkerboard pattern, button 0 (bottom-left) is ON
-        for btn in 0..64 {
-            let row = btn / 8;
-            let col = btn % 8;
-            if (row + col) % 2 == 0 {
-                let base_led = btn * 2;
-                boot_leds[base_led] = Color::ORANGE;
-                boot_leds[base_led + 1] = Color::ORANGE;
-            }
-        }
-
+        // Signal bootloader entry with orange checkerboard — zero stack allocation.
         let par_buf = unsafe { &mut *core::ptr::addr_of_mut!(PAR_BUF) };
-        led_driver.render_frame(par_buf, &boot_leds, &mut usb_stack);
+        led_driver.send_checkerboard_direct(par_buf, Color::ORANGE);
 
         bootloader::jump_to_bootloader();
+    }
+
+    // DEBUG: Trigger a panic if Button 1 (2nd button, bit 1) is held down at startup
+    if (initial_keys & 0b10) != 0 {
+        panic!("Button 1 held at startup debug panic");
     }
 
     // Initial LED and BTN status
