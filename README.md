@@ -16,7 +16,7 @@
 ---
 
 > [!WARNING]
-> This project is experimental. While it will not brick your MF64, please don't **try flashing it if you're not sure of what you're doing** or don't have the equipment necessary to recover a bricked MCU.
+> This project is experimental. While it will not brick your MF64, **please don't try flashing it if you're not sure of what you're doing** or don't have the equipment necessary to recover a bricked MCU.
 >
 > If you still do so, friendly reminder that **you are taking full responsibility**. *DJTT's official firmware works great, too!*
 

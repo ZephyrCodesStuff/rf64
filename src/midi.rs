@@ -26,7 +26,9 @@ pub const MIDI_BASENOTE: u8 = 36;
 /// MIDI channel (0-indexed wire value). 14 = Channel 15 in DAW display.
 const MIDI_CHANNEL: Channel = Channel::Channel15;
 
-/// Default note-on velocity, matches C firmware `G_EE_MIDI_VELOCITY` = 74.
+/// Default note-on velocity.
+///
+/// NOTE: The 2017 MF64 C firmware used 74, but Launchpads always send 127, so we do the same for consistency.
 const MIDI_VELOCITY: u8 = 127;
 
 /// How many `poll()` cycles a button must be stable before direction changes.
