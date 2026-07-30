@@ -254,7 +254,7 @@ unsafe fn send_byte_pin<const PORT: u8, const PIN: u8>(byte: u8) {
 }
 
 #[inline(always)]
-pub(crate) unsafe fn send_byte_pc6(byte: u8) {
+pub unsafe fn send_byte_pc6(byte: u8) {
     unsafe { send_byte_pin::<PORTC_IO, 6>(byte) };
 }
 
@@ -388,7 +388,7 @@ impl LedDriver {
         let per_led_sum = color.r as u32 + color.g as u32 + color.b as u32;
         let total_sum = per_led_sum * num_on_leds;
         let scale: u16 = if total_sum > SAFE_MAX_COLOR_SUM {
-            ((SAFE_MAX_COLOR_SUM as u32 * 256) / total_sum) as u16
+            ((SAFE_MAX_COLOR_SUM * 256) / total_sum) as u16
         } else {
             256
         };
