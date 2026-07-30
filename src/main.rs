@@ -105,6 +105,9 @@ fn main() -> ! {
         // If we draw the LEDs in the middle of this stream, they will flicker black.
         // We ensure a full "frame" is received by waiting for a short gap in USB traffic.
         let mut idle_cycles = 0;
+        let mut received_on = [false; 64];
+        let mut force_draw = false;
+        
         loop {
             usb_stack.poll();
             let mut read_any = false;
@@ -125,6 +128,16 @@ fn main() -> ! {
                     && (midi::MIDI_BASENOTE..(midi::MIDI_BASENOTE + 64)).contains(&note)
                 {
                     let btn = (note - midi::MIDI_BASENOTE) as usize;
+                    
+                    // Frame boundary detection: if this button already received an ON 
+                    // in this burst, any new event means we've crossed into the next frame!
+                    if received_on[btn] {
+                        force_draw = true;
+                    }
+                    if is_on {
+                        received_on[btn] = true;
+                    }
+
                     let color = if is_on {
                         crate::palette::ABLETON_COLORS[velocity as usize]
                     } else {
@@ -145,6 +158,14 @@ fn main() -> ! {
                         _ => {}
                     }
                 }
+                
+                if force_draw {
+                    break;
+                }
+            }
+
+            if force_draw {
+                break;
             }
 
             if read_any {
