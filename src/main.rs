@@ -2,6 +2,7 @@
 #![no_main]
 #![feature(asm_experimental_arch)]
 
+mod boot_anim;
 mod bootloader;
 mod delay;
 mod gpio;
@@ -14,7 +15,7 @@ mod usb;
 use atmega_hal::Peripherals;
 use gpio::LedPins;
 use keys::{key_read_raw, key_setup};
-use led::{Color, LedDriver, LEDS_PER_STRAND, TOTAL_LEDS};
+use led::{Color, LEDS_PER_STRAND, LedDriver, TOTAL_LEDS};
 use midi::{ButtonState, process_keys};
 
 /// Set CPU prescaler to 1 (16 MHz full speed).
@@ -57,6 +58,14 @@ const fn panic(_info: &core::panic::PanicInfo) -> ! {
 /// exclusive access pattern `fill → send` in the main loop is always race-free.
 static mut PAR_BUF: led::ParallelBitBuffer = led::ParallelBitBuffer::new();
 
+fn draw_frame(led_driver: &LedDriver, leds: &[Color; TOTAL_LEDS]) {
+    let par_buf = unsafe { &mut *core::ptr::addr_of_mut!(PAR_BUF) };
+    led::fill_parallel_buffer_into(par_buf, leds, 256);
+    led_driver.send_portb_parallel(par_buf);
+    led_driver.send_strand1(&leds[LEDS_PER_STRAND..LEDS_PER_STRAND * 2], 256);
+    led_driver.latch_frame();
+}
+
 #[atmega_hal::entry]
 fn main() -> ! {
     // -------------------------------------------------------------------------
@@ -85,16 +94,23 @@ fn main() -> ! {
     // Initialize key matrix pins using HAL pin abstractions
     key_setup(pins.pd7, pins.pd6, pins.pc7);
 
+    let led_driver = LedDriver::new();
+
     // Check if Button 0 is held down at startup to jump into DFU bootloader
     let initial_keys = key_read_raw();
     if bootloader::bootloader_combo_held(initial_keys) {
         bootloader::jump_to_bootloader();
     }
 
-    let led_driver = LedDriver::new();
     let mut btn_state = ButtonState::new();
 
     let mut host_leds: [Color; TOTAL_LEDS] = [Color::BLACK; TOTAL_LEDS];
+    // Blackout the entire grid ONCE at boot to clear any residual LEDs from a previous BL session
+    draw_frame(&led_driver, &host_leds);
+
+    let mut animating = true;
+    let mut life_sim = boot_anim::LifeSim::new();
+    let mut life_timer = 0;
 
     // -------------------------------------------------------------------------
     // 3. Real-time MIDI scanner & USB event loop
@@ -107,13 +123,17 @@ fn main() -> ! {
         let mut idle_cycles = 0;
         let mut received_on = [false; 64];
         let mut force_draw = false;
-        
+
         loop {
             usb_stack.poll();
             let mut read_any = false;
 
             while let Some(packet) = usb_stack.read_packet() {
                 read_any = true;
+                if animating {
+                    animating = false; // Stop animation if host sends data
+                    host_leds.fill(Color::BLACK);
+                }
 
                 let status = packet[1];
                 let note = packet[2];
@@ -123,15 +143,22 @@ fn main() -> ! {
 
                 let is_on = (cmd == 0x90) && (velocity > 0);
                 let is_off = (cmd == 0x80) || ((cmd == 0x90) && (velocity == 0));
+                let is_cc = cmd == 0xB0;
 
-                if (is_on || is_off)
+                // Handle MIDI Panic / All Notes Off (CC 123) sent when playback stops
+                if is_cc && note == 123 {
+                    for led in host_leds.iter_mut() {
+                        *led = crate::led::Color::BLACK;
+                    }
+                    force_draw = true;
+                } else if (is_on || is_off)
                     && (midi::MIDI_BASENOTE..(midi::MIDI_BASENOTE + 64)).contains(&note)
                 {
                     let btn = (note - midi::MIDI_BASENOTE) as usize;
-                    
-                    // Frame boundary detection: if this button already received an ON 
-                    // in this burst, any new event means we've crossed into the next frame!
-                    if received_on[btn] {
+
+                    // Frame boundary detection: if this button already received an ON
+                    // in this burst, and now receives an OFF, we've crossed into the next frame!
+                    if is_off && received_on[btn] {
                         force_draw = true;
                     }
                     if is_on {
@@ -158,7 +185,7 @@ fn main() -> ! {
                         _ => {}
                     }
                 }
-                
+
                 if force_draw {
                     break;
                 }
@@ -180,16 +207,47 @@ fn main() -> ! {
         }
 
         let pressed_keys = key_read_raw();
+        if pressed_keys != 0 && animating {
+            animating = false; // Stop animation if a key is pressed
+            host_leds.fill(Color::BLACK);
+        }
         process_keys(pressed_keys, &mut btn_state, &mut usb_stack);
+
+        if animating {
+            life_timer += 1;
+            if life_timer >= 15 {
+                // ~35-40ms per step (approx 25-30 FPS)
+                life_sim.step();
+                life_timer = 0;
+            }
+
+            let current_state = life_sim.state();
+            for btn in 0..64 {
+                let color = if (current_state >> btn) & 1 != 0 {
+                    crate::led::Color::WHITE
+                } else {
+                    crate::led::Color::BLACK
+                };
+                let base_led = btn * 2;
+                host_leds[base_led] = color;
+                host_leds[base_led + 1] = color;
+            }
+        }
 
         // --- Dynamic Power & Brightness Limiting ---
         let mut total_sum: u32 = 0;
         let mut max_component: u8 = 0;
         for c in host_leds.iter() {
             total_sum += c.r as u32 + c.g as u32 + c.b as u32;
-            if c.r > max_component { max_component = c.r; }
-            if c.g > max_component { max_component = c.g; }
-            if c.b > max_component { max_component = c.b; }
+            if c.r > max_component {
+                max_component = c.r;
+            }
+            if c.g > max_component {
+                max_component = c.g;
+            }
+            if c.b > max_component {
+                max_component = c.b;
+            }
         }
 
         let power_scale = if total_sum > led::SAFE_MAX_COLOR_SUM {
@@ -204,7 +262,11 @@ fn main() -> ! {
             256
         };
 
-        let final_scale = if power_scale < bright_scale { power_scale } else { bright_scale };
+        let final_scale = if power_scale < bright_scale {
+            power_scale
+        } else {
+            bright_scale
+        };
 
         // Draw the fully stable frame (~1.95 ms total, down from ~3.92 ms).
         //
@@ -222,7 +284,10 @@ fn main() -> ! {
         led_driver.send_portb_parallel(par_buf); // strands 0, 2, 3 in parallel
         usb_stack.poll(); // Keep USB alive between the two transmission passes
 
-        led_driver.send_strand1(&host_leds[LEDS_PER_STRAND..LEDS_PER_STRAND * 2], final_scale);
+        led_driver.send_strand1(
+            &host_leds[LEDS_PER_STRAND..LEDS_PER_STRAND * 2],
+            final_scale,
+        );
         usb_stack.poll();
 
         led_driver.latch_frame();

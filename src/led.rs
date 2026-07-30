@@ -60,6 +60,11 @@ pub struct Color {
 }
 
 impl Color {
+    pub const WHITE: Self = Self {
+        r: 255,
+        g: 255,
+        b: 255,
+    };
     pub const BLACK: Self = Self { r: 0, g: 0, b: 0 };
 
     pub const fn new(r: u8, g: u8, b: u8) -> Self {
@@ -120,7 +125,11 @@ impl ParallelBitBuffer {
 /// - Strand 1 (PC6):        `host_leds[ 32 ..  64]`  ← handled separately
 /// - Strand 2 (PB5, bit 5): `host_leds[ 64 ..  96]`
 /// - Strand 3 (PB4, bit 4): `host_leds[ 96 .. 128]`
-pub fn fill_parallel_buffer_into(buf: &mut ParallelBitBuffer, host_leds: &[Color; TOTAL_LEDS], scale: u16) {
+pub fn fill_parallel_buffer_into(
+    buf: &mut ParallelBitBuffer,
+    host_leds: &[Color; TOTAL_LEDS],
+    scale: u16,
+) {
     let mut idx = 0usize;
 
     for led_pos in 0..LEDS_PER_STRAND {
