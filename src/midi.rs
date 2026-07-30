@@ -124,3 +124,120 @@ pub fn process_keys(raw: u64, state: &mut ButtonState, usb: &mut UsbMidiStack) {
         }
     }
 }
+
+// ── MIDI Packet Receiver & Frame Synchronizer ─────────────────────────────────
+
+/// Handles receiving incoming USB MIDI packets from the host DAW, frame boundary
+/// detection, and mapping host note/velocity commands to LED grid colors.
+pub struct MidiRx {
+    _private: (),
+}
+
+impl MidiRx {
+    pub const fn new() -> Self {
+        Self { _private: () }
+    }
+
+    /// Drain incoming USB MIDI packets until the stream is stable (~300us idle gap)
+    /// or a frame boundary is crossed.
+    ///
+    /// Updates `host_leds`, cancels `animating` if host data arrives, and returns
+    /// whether the LED grid received updates (`dirty`).
+    pub fn drain_incoming_frame(
+        &self,
+        usb_stack: &mut UsbMidiStack,
+        host_leds: &mut [crate::led::Color; crate::led::TOTAL_LEDS],
+        animating: &mut bool,
+    ) -> bool {
+        let mut idle_cycles = 0;
+        let mut received_on = [false; 64];
+        let mut force_draw = false;
+        let mut dirty = false;
+
+        loop {
+            usb_stack.poll();
+            let mut read_any = false;
+
+            while let Some(packet) = usb_stack.read_packet() {
+                read_any = true;
+                if *animating {
+                    *animating = false; // Stop animation if host sends data
+                    host_leds.fill(crate::led::Color::BLACK);
+                }
+
+                let status = packet[1];
+                let note = packet[2];
+                let velocity = packet[3];
+                let channel = status & 0x0F;
+                let cmd = status & 0xF0;
+
+                let is_on = (cmd == 0x90) && (velocity > 0);
+                let is_off = (cmd == 0x80) || ((cmd == 0x90) && (velocity == 0));
+                let is_cc = cmd == 0xB0;
+
+                // Handle MIDI Panic / All Notes Off (CC 123) sent when playback stops.
+                if is_cc && note == 123 {
+                    for led in host_leds.iter_mut() {
+                        *led = crate::led::Color::BLACK;
+                    }
+                    dirty = true;
+                } else if (is_on || is_off) && (MIDI_BASENOTE..(MIDI_BASENOTE + 64)).contains(&note)
+                {
+                    let btn = (note - MIDI_BASENOTE) as usize;
+
+                    // Frame boundary detection: if this button already received an ON
+                    // in this burst, and now receives an OFF, we've crossed into the next frame!
+                    if is_off && received_on[btn] {
+                        usb_stack.unread_packet();
+                        force_draw = true;
+                        break;
+                    }
+                    if is_on {
+                        received_on[btn] = true;
+                    }
+
+                    let color = if is_on {
+                        crate::palette::ABLETON_COLORS[velocity as usize]
+                    } else {
+                        crate::led::Color::BLACK
+                    };
+                    let base_led = btn * 2;
+                    match channel {
+                        2 => {
+                            host_leds[base_led] = color;
+                            host_leds[base_led + 1] = color;
+                        }
+                        3 => {
+                            host_leds[base_led] = color;
+                        }
+                        4 => {
+                            host_leds[base_led + 1] = color;
+                        }
+                        _ => {}
+                    }
+                    dirty = true;
+                }
+
+                if force_draw {
+                    break;
+                }
+            }
+
+            if force_draw {
+                break;
+            }
+
+            if read_any {
+                idle_cycles = 0; // reset idle counter if we got data
+            } else {
+                idle_cycles += 1;
+                if idle_cycles > 30 {
+                    break; // ~300us of idle time, stream is stable
+                }
+                crate::delay::delay_us(10);
+            }
+        }
+
+        dirty
+    }
+}

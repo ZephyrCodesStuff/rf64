@@ -60,12 +60,25 @@ pub struct Color {
 }
 
 impl Color {
+    /// Used for the boot animation (Conway's Game of Life simulation) to represent a live cell.
     pub const WHITE: Self = Self {
         r: 255,
         g: 255,
         b: 255,
     };
+
+    /// Used to clear the LED buffer to black (all off) before each frame.
     pub const BLACK: Self = Self { r: 0, g: 0, b: 0 };
+
+    /// Used for the bootloader indicator checkerboard pattern.
+    ///
+    /// Orange is chosen to tell the user they got here from OUR firmware,
+    /// and not official one (since that one uses blue).
+    pub const ORANGE: Self = Self {
+        r: 255,
+        g: 80,
+        b: 0,
+    };
 
     pub const fn new(r: u8, g: u8, b: u8) -> Self {
         Self { r, g, b }
@@ -84,6 +97,42 @@ impl Color {
             g: if self.g > 0 && sg == 0 { 1 } else { sg as u8 },
             b: if self.b > 0 && sb == 0 { 1 } else { sb as u8 },
         }
+    }
+}
+
+/// Calculate dynamic power and brightness scale factor (0-256) across all LEDs.
+pub fn compute_safe_scale(host_leds: &[Color; TOTAL_LEDS]) -> u16 {
+    let mut total_sum: u32 = 0;
+    let mut max_component: u8 = 0;
+    for c in host_leds.iter() {
+        total_sum += c.r as u32 + c.g as u32 + c.b as u32;
+        if c.r > max_component {
+            max_component = c.r;
+        }
+        if c.g > max_component {
+            max_component = c.g;
+        }
+        if c.b > max_component {
+            max_component = c.b;
+        }
+    }
+
+    let power_scale = if total_sum > SAFE_MAX_COLOR_SUM {
+        ((SAFE_MAX_COLOR_SUM * 256) / total_sum) as u16
+    } else {
+        256
+    };
+
+    let bright_scale = if max_component > SAFE_MAX_PIXEL_COMPONENT {
+        (SAFE_MAX_PIXEL_COMPONENT as u16 * 256) / max_component as u16
+    } else {
+        256
+    };
+
+    if power_scale < bright_scale {
+        power_scale
+    } else {
+        bright_scale
     }
 }
 
@@ -320,5 +369,30 @@ impl LedDriver {
     /// Call once after all strands are sent.
     pub fn latch_frame(&self) {
         delay_us(80);
+    }
+
+    /// Complete frame render pipeline: computes safe scaling, fills parallel bit buffer,
+    /// transmits parallel PORTB strands, polls USB, transmits sequential PC6 strand,
+    /// polls USB, and latches the frame.
+    pub fn render_frame(
+        &self,
+        par_buf: &mut ParallelBitBuffer,
+        host_leds: &[Color; TOTAL_LEDS],
+        usb_stack: &mut crate::usb::UsbMidiStack,
+    ) {
+        let final_scale = compute_safe_scale(host_leds);
+
+        fill_parallel_buffer_into(par_buf, host_leds, final_scale);
+
+        self.send_portb_parallel(par_buf);
+        usb_stack.poll();
+
+        self.send_strand1(
+            &host_leds[LEDS_PER_STRAND..LEDS_PER_STRAND * 2],
+            final_scale,
+        );
+        usb_stack.poll();
+
+        self.latch_frame();
     }
 }
