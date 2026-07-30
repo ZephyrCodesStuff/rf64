@@ -91,13 +91,22 @@ With the built-in DFU bootloader, things get 10x easier.
 > 
 > This is because the bootloader only starts if a specific value is written in RAM. Powering off the device without a valid firmware will reset the device, thus the magic value will get wiped and the bootloader will never start again. You will then need to use the ICSP header to re-flash the device completely.
 
-To flash a new firmware, simply run:
+To flash a new firmware, you'll first have to start the MF64 in **DFU bootloader mode**.
+
+1. Unplug it, if you haven't already
+2. Press the button on the very bottom-left
+3. While keeping the button pressed down, plug the MF64's USB back in and wait 2 seconds
+
+If everything went correctly, in your devices you should now see something like "Midi Fighter DFU Bootloader".
+
+Now that your MF64 is in "DFU bootloader" mode, simply run:
 
 ```bash
+# ! DO NOT UNPLUG THE DEVICE IN-BETWEEN THESE !
 dfu-programmer atmega32u4 erase
 dfu-programmer atmega32u4 flash target/rf64.hex
 
-# Optionally, to reboot the device
+# ONLY AFTER FLASHING, optionally, to reboot the device:
 dfu-programmer atmega32u4 start
 ```
 
