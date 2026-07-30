@@ -2,7 +2,7 @@
 # Run from the project root directory (where Cargo.toml is located)
 
 param (
-    [string]$Profile = "debug"
+    [string]$Profile = "release"
 )
 
 Write-Host "Building rf64 firmware (Profile: $Profile)..." -ForegroundColor Cyan

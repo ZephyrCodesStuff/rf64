@@ -111,6 +111,7 @@ fn main() -> ! {
     let mut animating = true;
     let mut life_sim = boot_anim::LifeSim::new();
     let mut life_timer = 0;
+    let mut dirty = true;
 
     // -------------------------------------------------------------------------
     // 3. Real-time MIDI scanner & USB event loop
@@ -150,7 +151,9 @@ fn main() -> ! {
                     for led in host_leds.iter_mut() {
                         *led = crate::led::Color::BLACK;
                     }
+                    dirty = true;
                     force_draw = true;
+                    break;
                 } else if (is_on || is_off)
                     && (midi::MIDI_BASENOTE..(midi::MIDI_BASENOTE + 64)).contains(&note)
                 {
@@ -159,7 +162,9 @@ fn main() -> ! {
                     // Frame boundary detection: if this button already received an ON
                     // in this burst, and now receives an OFF, we've crossed into the next frame!
                     if is_off && received_on[btn] {
+                        usb_stack.unread_packet();
                         force_draw = true;
+                        break;
                     }
                     if is_on {
                         received_on[btn] = true;
@@ -184,6 +189,7 @@ fn main() -> ! {
                         }
                         _ => {}
                     }
+                    dirty = true;
                 }
 
                 if force_draw {
@@ -200,7 +206,7 @@ fn main() -> ! {
             } else {
                 idle_cycles += 1;
                 if idle_cycles > 30 {
-                    break; // ~300us of idle time, stream is stable
+                    break; // ~300us of idle time, stream is stable; drawing is gated by `dirty`
                 }
                 crate::delay::delay_us(10);
             }
@@ -210,31 +216,40 @@ fn main() -> ! {
         if pressed_keys != 0 && animating {
             animating = false; // Stop animation if a key is pressed
             host_leds.fill(Color::BLACK);
+            dirty = true;
         }
         process_keys(pressed_keys, &mut btn_state, &mut usb_stack);
+        if pressed_keys != 0 {
+            dirty = true; // Button presses change LED state
+        }
 
         if animating {
             life_timer += 1;
-            if life_timer >= 15 {
-                // ~35-40ms per step (approx 25-30 FPS)
+            // When animating but NOT drawing, the outer loop runs at ~300us per iteration
+            // We want ~35ms per step, so 35ms / 0.3ms = ~116 ticks
+            if life_timer >= 116 {
                 life_sim.step();
                 life_timer = 0;
+                dirty = true;
             }
 
-            let current_state = life_sim.state();
-            for btn in 0..64 {
-                let color = if (current_state >> btn) & 1 != 0 {
-                    crate::led::Color::WHITE
-                } else {
-                    crate::led::Color::BLACK
-                };
-                let base_led = btn * 2;
-                host_leds[base_led] = color;
-                host_leds[base_led + 1] = color;
+            if dirty {
+                let current_state = life_sim.state();
+                for btn in 0..64 {
+                    let color = if (current_state >> btn) & 1 != 0 {
+                        crate::led::Color::WHITE
+                    } else {
+                        crate::led::Color::BLACK
+                    };
+                    let base_led = btn * 2;
+                    host_leds[base_led] = color;
+                    host_leds[base_led + 1] = color;
+                }
             }
         }
 
-        // --- Dynamic Power & Brightness Limiting ---
+        if dirty {
+            // --- Dynamic Power & Brightness Limiting ---
         let mut total_sum: u32 = 0;
         let mut max_component: u8 = 0;
         for c in host_leds.iter() {
@@ -291,5 +306,7 @@ fn main() -> ! {
         usb_stack.poll();
 
         led_driver.latch_frame();
+            dirty = false;
+        }
     }
 }

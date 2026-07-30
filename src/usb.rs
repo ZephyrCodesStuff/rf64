@@ -85,6 +85,12 @@ impl<'a, B: UsbBus> MidiClass<'a, B> {
             Err(usb_device::UsbError::WouldBlock)
         }
     }
+
+    pub const fn unread_packet(&mut self) {
+        if self.read_pos >= 4 {
+            self.read_pos -= 4;
+        }
+    }
 }
 
 impl<B: UsbBus> UsbClass<B> for MidiClass<'_, B> {
@@ -255,5 +261,9 @@ impl<'a> UsbMidiStack<'a> {
 
     pub fn read_packet(&mut self) -> Option<[u8; 4]> {
         self.midi.read_packet().ok()
+    }
+
+    pub const fn unread_packet(&mut self) {
+        self.midi.unread_packet();
     }
 }

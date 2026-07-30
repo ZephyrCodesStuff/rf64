@@ -8,14 +8,14 @@ build-std = ["core"]
 [profile.dev]
 panic = "abort"
 lto = true
-opt-level = "s"
+opt-level = 3
 
 [profile.release]
 panic = "abort"
 codegen-units = 1
 # debug = true
 lto = true
-opt-level = "s"
+opt-level = 3
 
 [target.avr-none]
 rustflags = [
