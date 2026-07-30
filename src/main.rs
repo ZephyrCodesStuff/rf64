@@ -14,7 +14,7 @@ mod usb;
 use atmega_hal::Peripherals;
 use gpio::LedPins;
 use keys::{key_read_raw, key_setup};
-use led::{Color, LedDriver, NUM_BUTTONS, PhysicalLedBuffer, TOTAL_LEDS};
+use led::{Color, LedDriver, LEDS_PER_STRAND, TOTAL_LEDS};
 use midi::{ButtonState, process_keys};
 
 /// Set CPU prescaler to 1 (16 MHz full speed).
@@ -48,6 +48,14 @@ fn disable_jtag() {
 const fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
+
+/// Parallel bit buffer for strands 0, 2, 3 (PORTB). Placed in BSS as a `static mut`
+/// so the 768 bytes are not pushed onto the call stack on every frame.
+///
+/// # Safety
+/// This firmware is single-threaded (no interrupts touching LED state), so the
+/// exclusive access pattern `fill → send` in the main loop is always race-free.
+static mut PAR_BUF: led::ParallelBitBuffer = led::ParallelBitBuffer::new();
 
 #[atmega_hal::entry]
 fn main() -> ! {
@@ -84,7 +92,6 @@ fn main() -> ! {
     }
 
     let led_driver = LedDriver::new();
-    let mut buffer = PhysicalLedBuffer::new();
     let mut btn_state = ButtonState::new();
 
     let mut host_leds: [Color; TOTAL_LEDS] = [Color::BLACK; TOTAL_LEDS];
@@ -154,25 +161,23 @@ fn main() -> ! {
         let pressed_keys = key_read_raw();
         process_keys(pressed_keys, &mut btn_state, &mut usb_stack);
 
-        buffer.clear();
-        for btn in 0..NUM_BUTTONS {
-            let base_led = btn * 2;
-            buffer.set_button_split(btn, host_leds[base_led], host_leds[base_led + 1]);
-        }
+        // Draw the fully stable frame (~1.95 ms total, down from ~3.92 ms).
+        //
+        // Step 1: Pre-compute 768 PORTB mid-phase masks from host_leds (no timing
+        //         constraints — pure Rust, ~0.05 ms).
+        // Step 2: Drive strands 0 (PB6), 2 (PB5), 3 (PB4) simultaneously via a
+        //         single `out PORTB` per WS2812 phase (~0.91 ms for all three).
+        // Step 3: Drive strand 1 (PC6) sequentially as before (~0.96 ms).
+        //
+        // USB hardware FIFO buffers incoming packets during WS2812 transmission.
+        // Safety: PAR_BUF is only accessed here in the single-threaded main loop.
+        let par_buf = unsafe { &mut *core::ptr::addr_of_mut!(PAR_BUF) };
+        led::fill_parallel_buffer_into(par_buf, &host_leds);
 
-        // Draw the fully stable frame. (Takes ~3.8ms total).
-        // Since we disabled interrupts during WS2812, USB hardware FIFO will buffer
-        // incoming packets during this time.
-        led_driver.send_strand0(&buffer);
-        usb_stack.poll(); // Keep USB alive between strands
+        led_driver.send_portb_parallel(par_buf); // strands 0, 2, 3 in parallel
+        usb_stack.poll(); // Keep USB alive between the two transmission passes
 
-        led_driver.send_strand1(&buffer);
-        usb_stack.poll();
-
-        led_driver.send_strand2(&buffer);
-        usb_stack.poll();
-
-        led_driver.send_strand3(&buffer);
+        led_driver.send_strand1(&host_leds[LEDS_PER_STRAND..LEDS_PER_STRAND * 2]);
         usb_stack.poll();
 
         led_driver.latch_frame();
