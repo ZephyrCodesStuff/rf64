@@ -12,13 +12,15 @@ mod mcu;
 mod midi;
 mod palette;
 mod usb;
+mod fastled;
+mod sysex;
 
 use atmega_hal::Peripherals;
 use gpio::LedPins;
 use keys::{key_read_raw, key_setup};
 use led::{Color, LedDriver};
 use mcu::init_hardware_safeguards;
-use midi::{ButtonState, MidiRx, process_keys};
+use midi::{MidiRx, process_keys};
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
@@ -57,6 +59,15 @@ static mut PAR_BUF: led::ParallelBitBuffer = led::ParallelBitBuffer::new();
 /// (64 buttons × 2 LEDs each, 3 bytes per LED).
 static mut HOST_LEDS: [led::Color; led::TOTAL_LEDS] = [led::Color::BLACK; led::TOTAL_LEDS];
 
+/// SysEx Parser State Machine & Buffer. In BSS to prevent stack overflow.
+static mut SYSEX_PARSER: sysex::SysExParser = sysex::SysExParser::new();
+
+/// Snake boot animation state. In BSS (~80 bytes) to keep it off main()'s stack frame.
+static mut SNAKE_SIM: boot_anim::SnakeSim = boot_anim::SnakeSim::new();
+
+/// Debounced button state. In BSS (~128 bytes) to keep it off main()'s stack frame.
+static mut BTN_STATE: midi::ButtonState = midi::ButtonState::new();
+
 #[atmega_hal::entry]
 fn main() -> ! {
     // 0. Disable interrupts immediately! LUFA bootloader may leave them enabled,
@@ -74,10 +85,10 @@ fn main() -> ! {
     let dp = Peripherals::take().unwrap();
     let _led_pins = LedPins::init(&dp.PORTB, &dp.PORTC);
 
-    // Initialize 48MHz USB PLL clock and USB bus allocator
+    // Initialize 48MHz USB PLL, then place UsbBusAllocator + UsbMidiStack into
+    // module-level statics (off the stack). Returns a &'static mut reference.
     usb::init_usb_pll();
-    let bus_allocator = usb::create_usb_bus(dp.USB_DEVICE);
-    let mut usb_stack = usb::UsbMidiStack::new(&bus_allocator);
+    usb::init_global(dp.USB_DEVICE);
 
     // Initialize Timer1 for 1-second idle counting (prescaler 1024 => 15,625 Hz at 16 MHz)
     dp.TC1.tccr1b().write(|w| unsafe { w.bits(0x05) });
@@ -108,19 +119,18 @@ fn main() -> ! {
         panic!("Button 1 held at startup debug panic");
     }
 
-    // Initial LED and BTN status
-    let mut btn_state = ButtonState::new();
-    // SAFETY: single-threaded; HOST_LEDS is only accessed from this function.
+    // SAFETY: single-threaded; all statics are only accessed from this function.
     let host_leds = unsafe { &mut *core::ptr::addr_of_mut!(HOST_LEDS) };
+    let btn_state = unsafe { &mut *core::ptr::addr_of_mut!(BTN_STATE) };
+    let snake_sim = unsafe { &mut *core::ptr::addr_of_mut!(SNAKE_SIM) };
     let mut dirty = true; // Whether we should redraw
 
     // Blackout the entire grid ONCE at boot to clear residual LEDs from a previous session
     let par_buf = unsafe { &mut *core::ptr::addr_of_mut!(PAR_BUF) };
-    led_driver.render_frame(par_buf, host_leds, &mut usb_stack);
+    led_driver.render_frame(par_buf, host_leds);
 
     // Boot animation: snake game :)
     let mut animating = true;
-    let mut snake_sim = boot_anim::SnakeSim::new();
     let mut life_timer: u8 = 0;
     let mut seconds_idle: u16 = 0;
 
@@ -128,6 +138,9 @@ fn main() -> ! {
     // 3. Main Event & Frame Sync Loop
     // -------------------------------------------------------------------------
     loop {
+        // ALWAYS poll the USB device so it can process setup packets and enumeration
+        crate::usb::poll();
+
         // 0. Monitor 1-second hardware timer tick (15,625 Hz) for idle timeout
         let tcnt = dp.TC1.tcnt1().read().bits();
         if tcnt >= 15625 {
@@ -143,8 +156,9 @@ fn main() -> ! {
         }
 
         // A. Poll & drain incoming USB MIDI packets from DAW
+        let sysex_parser = unsafe { &mut *core::ptr::addr_of_mut!(SYSEX_PARSER) };
         let (midi_dirty, midi_active) =
-            midi_rx.drain_incoming_frame(&mut usb_stack, host_leds, &mut animating);
+            midi_rx.drain_incoming_frame(host_leds, &mut animating, sysex_parser);
         if midi_dirty {
             dirty = true;
         }
@@ -164,7 +178,7 @@ fn main() -> ! {
             }
             dirty = true;
         }
-        process_keys(pressed_keys, &mut btn_state, &mut usb_stack);
+        process_keys(pressed_keys, btn_state);
 
         // C. Boot animation ticker (snake game)
         //
@@ -191,7 +205,7 @@ fn main() -> ! {
         // D. Power/Brightness Scaled Frame Transmission
         if dirty {
             let par_buf = unsafe { &mut *core::ptr::addr_of_mut!(PAR_BUF) };
-            led_driver.render_frame(par_buf, host_leds, &mut usb_stack);
+            led_driver.render_frame(par_buf, host_leds);
             dirty = false;
         }
     }

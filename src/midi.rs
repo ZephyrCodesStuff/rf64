@@ -16,8 +16,6 @@ use usbd_midi::data::{
     usb_midi::{cable_number::CableNumber, usb_midi_event_packet::UsbMidiEventPacket},
 };
 
-use crate::usb::UsbMidiStack;
-
 // ── Constants matching C firmware defaults ────────────────────────────────────
 
 /// MIDI note for button 0 (C2 = 36). Button N → `MIDI_BASENOTE` + N.
@@ -45,8 +43,8 @@ const DEBOUNCE_CYCLES: u8 = 2;
 ///   2. Start the debounce counter.
 ///   3. Ignore further transitions until the counter expires (button stable).
 pub struct ButtonState {
-    /// `true` = button is considered PRESSED in the debounced state.
-    confirmed: [bool; 64],
+    /// Bitmask: `1` = button is considered PRESSED in the debounced state.
+    confirmed: u64,
     /// Cycles remaining before the debounce window is open again (0 = ready).
     counter: [u8; 64],
 }
@@ -54,7 +52,7 @@ pub struct ButtonState {
 impl ButtonState {
     pub const fn new() -> Self {
         Self {
-            confirmed: [false; 64],
+            confirmed: 0,
             counter: [0; 64],
         }
     }
@@ -78,7 +76,7 @@ fn note_from_u8(n: u8) -> Note {
 /// `DEBOUNCE_CYCLES` cycles to suppress bounce.
 ///
 /// Call once per main-loop iteration, after `key_read_raw()`.
-pub fn process_keys(raw: u64, state: &mut ButtonState, usb: &mut UsbMidiStack) {
+pub fn process_keys(raw: u64, state: &mut ButtonState) {
     for btn in 0usize..64 {
         let pressed = (raw & (1u64 << btn)) != 0;
 
@@ -89,9 +87,14 @@ pub fn process_keys(raw: u64, state: &mut ButtonState, usb: &mut UsbMidiStack) {
         }
 
         // Debounce window open: check for a new edge.
-        if pressed != state.confirmed[btn] {
+        let was_confirmed = (state.confirmed & (1u64 << btn)) != 0;
+        if pressed != was_confirmed {
             // First edge → fire immediately, then start debounce window.
-            state.confirmed[btn] = pressed;
+            if pressed {
+                state.confirmed |= 1u64 << btn;
+            } else {
+                state.confirmed &= !(1u64 << btn);
+            }
             state.counter[btn] = DEBOUNCE_CYCLES;
 
             let note_num = MIDI_BASENOTE + btn as u8;
@@ -116,10 +119,10 @@ pub fn process_keys(raw: u64, state: &mut ButtonState, usb: &mut UsbMidiStack) {
                         )
                     },
                 };
-                if usb.midi.send_message(packet).is_ok() {
+                if crate::usb::send_raw_packet(packet.into()).is_ok() {
                     break;
                 }
-                usb.poll(); // flush the TX endpoint and retry
+                crate::usb::poll(); // flush the TX endpoint and retry
             }
         }
     }
@@ -145,21 +148,21 @@ impl MidiRx {
     /// `(dirty, activity)` tuple.
     pub fn drain_incoming_frame(
         &self,
-        usb_stack: &mut UsbMidiStack,
         host_leds: &mut [crate::led::Color; crate::led::TOTAL_LEDS],
         animating: &mut bool,
+        sysex_parser: &mut crate::sysex::SysExParser,
     ) -> (bool, bool) {
         let mut idle_cycles = 0;
-        let mut received_on = [false; 64];
+        let mut received_on = 0u64;
         let mut force_draw = false;
         let mut dirty = false;
         let mut activity = false;
 
         loop {
-            usb_stack.poll();
+            crate::usb::poll();
             let mut read_any = false;
 
-            while let Some(packet) = usb_stack.read_packet() {
+            while let Some(packet) = crate::usb::read_packet() {
                 read_any = true;
 
                 let status = packet[1];
@@ -167,6 +170,22 @@ impl MidiRx {
                 let velocity = packet[3];
                 let channel = status & 0x0F;
                 let cmd = status & 0xF0;
+                let cin = packet[0] & 0x0F;
+
+                // SysEx processing
+                if (0x4..=0x7).contains(&cin) {
+                    // For CIN 5, 6, 7 (ends), process and trigger redraw if needed
+                    let modified = sysex_parser.process_packet(&packet, host_leds);
+                    if modified {
+                        activity = true;
+                        dirty = true;
+                        if *animating {
+                            *animating = false; // Stop animation if host sends data
+                            host_leds.fill(crate::led::Color::BLACK);
+                        }
+                    }
+                    continue; // Skip the standard Note/CC processing for SysEx
+                }
 
                 let is_on = (cmd == 0x90) && (velocity > 0);
                 let is_off = (cmd == 0x80) || ((cmd == 0x90) && (velocity == 0));
@@ -193,17 +212,17 @@ impl MidiRx {
 
                     // Frame boundary detection: if this button already received an ON
                     // in this burst, and now receives an OFF, we've crossed into the next frame!
-                    if is_off && received_on[btn] {
-                        usb_stack.unread_packet();
+                    if is_off && (received_on & (1 << btn)) != 0 {
+                        crate::usb::unread_packet();
                         force_draw = true;
                         break;
                     }
                     if is_on {
-                        received_on[btn] = true;
+                        received_on |= 1 << btn;
                     }
 
                     let color = if is_on {
-                        crate::palette::ABLETON_COLORS[velocity as usize]
+                        crate::palette::ABLETON_COLORS.load_at(velocity as usize)
                     } else {
                         crate::led::Color::BLACK
                     };

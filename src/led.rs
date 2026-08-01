@@ -348,20 +348,19 @@ impl LedDriver {
         &self,
         par_buf: &mut ParallelBitBuffer,
         host_leds: &[Color; TOTAL_LEDS],
-        usb_stack: &mut crate::usb::UsbMidiStack,
     ) {
         let final_scale = compute_safe_scale(host_leds);
 
         fill_parallel_buffer_into(par_buf, host_leds, final_scale);
 
         self.send_portb_parallel(par_buf);
-        usb_stack.poll();
+        crate::usb::poll();
 
         self.send_strand1(
             &host_leds[LEDS_PER_STRAND..LEDS_PER_STRAND * 2],
             final_scale,
         );
-        usb_stack.poll();
+        crate::usb::poll();
 
         self.latch_frame();
     }

@@ -1,8 +1,76 @@
+use core::mem::MaybeUninit;
 use usb_device::bus::UsbBusAllocator;
 use usb_device::class_prelude::*;
 use usb_device::device::{UsbDevice, UsbDeviceBuilder, UsbVidPid};
 
 pub type TargetUsbBus = atmega_usbd::UsbBus<()>;
+
+// ── Global USB storage ───────────────────────────────────────────────────────
+// Placing these in module-level statics (BSS/data) removes them from main()'s
+// stack frame. Two-phase init: write allocator first, then borrow it as
+// 'static to construct UsbMidiStack.
+//
+// SAFETY: single-threaded AVR firmware — no concurrent access possible.
+pub static mut BUS_ALLOC_STORAGE: MaybeUninit<UsbBusAllocator<TargetUsbBus>> =
+    MaybeUninit::uninit();
+pub static mut USB_DEV_STORAGE: MaybeUninit<UsbDevice<'static, TargetUsbBus>> =
+    MaybeUninit::uninit();
+pub static mut MIDI_STORAGE: MaybeUninit<MidiClass<'static, TargetUsbBus>> = MaybeUninit::uninit();
+
+/// Initialize the USB bus and MIDI stack into module-level static storage.
+/// Call once from `main()` before any USB activity.
+#[inline(never)]
+pub fn init_global(usb: atmega_hal::pac::USB_DEVICE) {
+    let alloc = atmega_usbd::UsbBus::new(usb);
+    let alloc_ref = unsafe {
+        let p = core::ptr::addr_of_mut!(BUS_ALLOC_STORAGE);
+        p.write(core::mem::MaybeUninit::new(alloc));
+        (*p).assume_init_ref()
+    };
+
+    init_midi(alloc_ref);
+    init_dev(alloc_ref);
+
+    // Poll once to trigger bus.enable() so USBE=1 before force_reset
+    let usb_dev = unsafe { (*core::ptr::addr_of_mut!(USB_DEV_STORAGE)).assume_init_mut() };
+    let midi = unsafe { (*core::ptr::addr_of_mut!(MIDI_STORAGE)).assume_init_mut() };
+    usb_dev.poll(&mut [midi]);
+
+    // Force a robust 100ms USB detach to ensure macOS/Windows recognize the reset from bootloader
+    unsafe {
+        // UDCON register (SRAM 0xE0), bit 0 is DETACH
+        core::ptr::write_volatile(0xE0 as *mut u8, 1);
+    }
+    crate::delay::delay_ms(100);
+    unsafe {
+        core::ptr::write_volatile(0xE0 as *mut u8, 0);
+    }
+}
+
+#[inline(never)]
+fn init_midi(alloc_ref: &'static UsbBusAllocator<TargetUsbBus>) {
+    unsafe {
+        let p = core::ptr::addr_of_mut!(MIDI_STORAGE);
+        p.write(core::mem::MaybeUninit::new(MidiClass::new(alloc_ref)));
+    }
+}
+
+#[inline(never)]
+fn init_dev(alloc_ref: &'static UsbBusAllocator<TargetUsbBus>) {
+    let dev = UsbDeviceBuilder::new(alloc_ref, UsbVidPid(VID, PID))
+        .manufacturer("https://github.com/ZephyrCodesStuff/rf64")
+        .product("Rusty Fighter 64")
+        .serial_number(r"0xDEADBEEF")
+        .device_class(0x00)
+        .device_sub_class(0x00)
+        .device_protocol(0x00)
+        .max_power(480)
+        .build();
+    unsafe {
+        let p = core::ptr::addr_of_mut!(USB_DEV_STORAGE);
+        p.write(core::mem::MaybeUninit::new(dev));
+    }
+}
 
 /// Enable the 48 MHz USB PLL from the 16 MHz crystal on `ATmega32U4`.
 /// Matches `ATmega32U4` datasheet & LUFA `USB_OPT_AUTO_PLL` logic.
@@ -24,11 +92,6 @@ pub fn init_usb_pll() {
 /// DJTT Midi Fighter 64 USB Identifiers
 pub const VID: u16 = 0x2580; // DJ TechTools
 pub const PID: u16 = 0x0008; // Midi Fighter 64
-
-/// Create a `UsbBusAllocator` using `ATmega32U4` `USB_DEVICE` peripheral.
-pub fn create_usb_bus(usb: atmega_hal::pac::USB_DEVICE) -> UsbBusAllocator<TargetUsbBus> {
-    atmega_usbd::UsbBus::new(usb)
-}
 
 /// Bi-directional USB MIDI Class supporting both MIDI IN (send) and MIDI OUT (receive).
 pub struct MidiClass<'a, B: UsbBus> {
@@ -55,11 +118,7 @@ impl<'a, B: UsbBus> MidiClass<'a, B> {
         }
     }
 
-    pub fn send_message(
-        &self,
-        usb_midi: usbd_midi::data::usb_midi::usb_midi_event_packet::UsbMidiEventPacket,
-    ) -> usb_device::Result<usize> {
-        let bytes: [u8; 4] = usb_midi.into();
+    pub fn send_raw_packet(&self, bytes: [u8; 4]) -> usb_device::Result<usize> {
         self.standard_bulkin.write(&bytes)
     }
 
@@ -220,50 +279,23 @@ impl<B: UsbBus> UsbClass<B> for MidiClass<'_, B> {
     }
 }
 
-pub struct UsbMidiStack<'a> {
-    pub usb_dev: UsbDevice<'a, TargetUsbBus>,
-    pub midi: MidiClass<'a, TargetUsbBus>,
+pub fn poll() -> bool {
+    let usb_dev = unsafe { (*core::ptr::addr_of_mut!(USB_DEV_STORAGE)).assume_init_mut() };
+    let midi = unsafe { (*core::ptr::addr_of_mut!(MIDI_STORAGE)).assume_init_mut() };
+    usb_dev.poll(&mut [midi])
 }
 
-impl<'a> UsbMidiStack<'a> {
-    pub fn new(bus: &'a UsbBusAllocator<TargetUsbBus>) -> Self {
-        let mut midi = MidiClass::new(bus);
+pub fn read_packet() -> Option<[u8; 4]> {
+    let midi = unsafe { (*core::ptr::addr_of_mut!(MIDI_STORAGE)).assume_init_mut() };
+    midi.read_packet().ok()
+}
 
-        let mut usb_dev = UsbDeviceBuilder::new(bus, UsbVidPid(VID, PID))
-            .manufacturer("https://github.com/ZephyrCodesStuff/rf64")
-            .product("Rusty Fighter 64")
-            // .serial_number(r#"¯\_(ツ)_/¯"#)
-            .serial_number(r"0xDEADBEEF")
-            .device_class(0x00)
-            .device_sub_class(0x00)
-            .device_protocol(0x00)
-            .max_power(480)
-            .build();
+pub fn unread_packet() {
+    let midi = unsafe { (*core::ptr::addr_of_mut!(MIDI_STORAGE)).assume_init_mut() };
+    midi.unread_packet();
+}
 
-        // Poll once to trigger bus.enable() so USBE=1 before force_reset
-        usb_dev.poll(&mut [&mut midi]);
-
-        // Force a robust 100ms USB detach to ensure macOS recognizes the reset from bootloader
-        unsafe {
-            core::ptr::write_volatile(0xE0 as *mut u8, 1);
-        }
-        crate::delay::delay_ms(100);
-        unsafe {
-            core::ptr::write_volatile(0xE0 as *mut u8, 0);
-        }
-
-        UsbMidiStack { usb_dev, midi }
-    }
-
-    pub fn poll(&mut self) -> bool {
-        self.usb_dev.poll(&mut [&mut self.midi])
-    }
-
-    pub fn read_packet(&mut self) -> Option<[u8; 4]> {
-        self.midi.read_packet().ok()
-    }
-
-    pub const fn unread_packet(&mut self) {
-        self.midi.unread_packet();
-    }
+pub fn send_raw_packet(bytes: [u8; 4]) -> usb_device::Result<usize> {
+    let midi = unsafe { (*core::ptr::addr_of_mut!(MIDI_STORAGE)).assume_init_mut() };
+    midi.send_raw_packet(bytes)
 }
