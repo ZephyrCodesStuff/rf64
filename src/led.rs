@@ -34,13 +34,6 @@ pub struct Color {
 }
 
 impl Color {
-    /// Used for the boot animation (Conway's Game of Life simulation) to represent a live cell.
-    pub const WHITE: Self = Self {
-        r: 255,
-        g: 255,
-        b: 255,
-    };
-
     /// Used to clear the LED buffer to black (all off) before each frame.
     pub const BLACK: Self = Self { r: 0, g: 0, b: 0 };
 

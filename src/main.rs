@@ -16,7 +16,7 @@ mod usb;
 use atmega_hal::Peripherals;
 use gpio::LedPins;
 use keys::{key_read_raw, key_setup};
-use led::{Color, LedDriver, TOTAL_LEDS};
+use led::{Color, LedDriver};
 use mcu::init_hardware_safeguards;
 use midi::{ButtonState, MidiRx, process_keys};
 
@@ -46,7 +46,6 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     }
 }
 
-
 /// Parallel bit buffer for strands 0, 2, 3 (PORTB).
 ///
 /// # Safety
@@ -54,9 +53,13 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 /// exclusive access pattern `fill → send` in the main loop is always race-free.
 static mut PAR_BUF: led::ParallelBitBuffer = led::ParallelBitBuffer::new();
 
+/// Current RGB color for each of the 128 physical WS2812 LEDs
+/// (64 buttons × 2 LEDs each, 3 bytes per LED).
+static mut HOST_LEDS: [led::Color; led::TOTAL_LEDS] = [led::Color::BLACK; led::TOTAL_LEDS];
+
 #[atmega_hal::entry]
 fn main() -> ! {
-    // 0. Disable interrupts immediately! LUFA bootloader may leave them enabled, 
+    // 0. Disable interrupts immediately! LUFA bootloader may leave them enabled,
     //    causing immediate resets or breaking WDT disable timing.
     avr_device::interrupt::disable();
 
@@ -79,7 +82,7 @@ fn main() -> ! {
     let pins = atmega_hal::pins!(dp);
     key_setup(pins.pd7, pins.pd6, pins.pc7);
 
-    // Give hardware (WS2812 LEDs and CD4021B shift registers) a moment to stabilize 
+    // Give hardware (WS2812 LEDs and CD4021B shift registers) a moment to stabilize
     // their power state before we read keys or blast LED data.
     crate::delay::delay_ms(50);
 
@@ -104,24 +107,25 @@ fn main() -> ! {
 
     // Initial LED and BTN status
     let mut btn_state = ButtonState::new();
-    let mut host_leds: [Color; TOTAL_LEDS] = [Color::BLACK; TOTAL_LEDS];
+    // SAFETY: single-threaded; HOST_LEDS is only accessed from this function.
+    let host_leds = unsafe { &mut *core::ptr::addr_of_mut!(HOST_LEDS) };
     let mut dirty = true; // Whether we should redraw
 
     // Blackout the entire grid ONCE at boot to clear residual LEDs from a previous session
     let par_buf = unsafe { &mut *core::ptr::addr_of_mut!(PAR_BUF) };
-    led_driver.render_frame(par_buf, &host_leds, &mut usb_stack);
+    led_driver.render_frame(par_buf, host_leds, &mut usb_stack);
 
-    // Boot animation: Conway's Game of Life :)
+    // Boot animation: snake game :)
     let mut animating = true;
-    let mut life_sim = boot_anim::LifeSim::new();
-    let mut life_timer = 0;
+    let mut snake_sim = boot_anim::SnakeSim::new();
+    let mut life_timer: u8 = 0;
 
     // -------------------------------------------------------------------------
     // 3. Main Event & Frame Sync Loop
     // -------------------------------------------------------------------------
     loop {
         // A. Poll & drain incoming USB MIDI packets from DAW
-        if midi_rx.drain_incoming_frame(&mut usb_stack, &mut host_leds, &mut animating) {
+        if midi_rx.drain_incoming_frame(&mut usb_stack, host_leds, &mut animating) {
             dirty = true;
         }
 
@@ -136,35 +140,32 @@ fn main() -> ! {
         }
         process_keys(pressed_keys, &mut btn_state, &mut usb_stack);
 
-        // C. Boot animation ticker (Conway's Game of Life)
+        // C. Boot animation ticker (snake game)
+        //
+        // Two rendered frames per snake step for sub-cell LED smoothing:
+        //   tick 16 → half_step(): preview entry/exit LEDs of the upcoming move
+        //   tick 32 → step():      commit the move; both LEDs of new head lit
         if animating {
-            // Update the board every 116 ticks
             life_timer += 1;
-            if life_timer >= 116 {
-                life_sim.step();
+            if life_timer == 16 {
+                snake_sim.half_step();
+                dirty = true;
+            }
+            if life_timer >= 32 {
+                snake_sim.step();
                 life_timer = 0;
                 dirty = true;
             }
 
             if dirty {
-                let current_state = life_sim.state();
-                for btn in 0..64 {
-                    let color = if (current_state >> btn) & 1 != 0 {
-                        Color::WHITE
-                    } else {
-                        Color::BLACK
-                    };
-                    let base_led = btn * 2;
-                    host_leds[base_led] = color;
-                    host_leds[base_led + 1] = color;
-                }
+                snake_sim.fill_leds(host_leds);
             }
         }
 
         // D. Power/Brightness Scaled Frame Transmission
         if dirty {
             let par_buf = unsafe { &mut *core::ptr::addr_of_mut!(PAR_BUF) };
-            led_driver.render_frame(par_buf, &host_leds, &mut usb_stack);
+            led_driver.render_frame(par_buf, host_leds, &mut usb_stack);
             dirty = false;
         }
     }
