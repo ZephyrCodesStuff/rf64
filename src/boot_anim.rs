@@ -37,6 +37,7 @@ const COLOR_APPLE: Color = Color::new(220, 0, 0);
 enum Dir {
     Right,
     Left,
+    Up,
     Down,
 }
 
@@ -95,46 +96,42 @@ const fn cycle_dist(from: u8, to: u8) -> u8 {
     (to + 64 - from) % 64
 }
 
-/// Manhattan grid distance with 8×8 wrap-around.
+/// Manhattan grid distance.
 #[inline(always)]
 const fn grid_dist(pos1: u8, pos2: u8) -> u8 {
     let (r1, c1) = pos_to_cell(pos1);
     let (r2, c2) = pos_to_cell(pos2);
-    let dr = r1.abs_diff(r2);
-    let dc = c1.abs_diff(c2);
-    let dr = if dr > 4 { 8 - dr } else { dr };
-    let dc = if dc > 4 { 8 - dc } else { dc };
-    dr + dc
+    r1.abs_diff(r2) + c1.abs_diff(c2)
 }
 
 /// Movement direction from `from_pos` to `to_pos`.
 #[inline(always)]
 const fn get_dir(from_pos: u8, to_pos: u8) -> Dir {
-    let (_, fc) = pos_to_cell(from_pos);
-    let (_, tc) = pos_to_cell(to_pos);
+    let (fr, fc) = pos_to_cell(from_pos);
+    let (tr, tc) = pos_to_cell(to_pos);
 
     if tc == (fc + 1) % 8 {
         Dir::Right
     } else if tc == (fc + 7) % 8 {
         Dir::Left
+    } else if tr == (fr + 1) % 8 {
+        Dir::Up
     } else {
         Dir::Down
     }
 }
 
-// ── 16-bit Fibonacci LFSR ─────────────────────────────────────────────────────
+// ── 16-bit Linear Congruential Generator ─────────────────────────────────────
 
 #[inline(always)]
-const fn lfsr_next(s: u16) -> u16 {
-    let bit = (s ^ (s >> 1) ^ (s >> 3) ^ (s >> 12)) & 1;
-    (s >> 1) | (bit << 15)
+const fn next_rand(s: u16) -> u16 {
+    s.wrapping_mul(25173).wrapping_add(13849)
 }
 
 // ── Tuning constants ──────────────────────────────────────────────────────────
 
 const INIT_LEN: u8 = 3;
 const INIT_APPLE_PATH: u8 = 27;
-const MAX_STEPS: u16 = 400;
 const RESTART_LEN: u8 = 60;
 const PAUSE_TICKS: u8 = 5;
 
@@ -210,37 +207,52 @@ impl SnakeSim {
         let tail_idx = (self.head_idx + 64 - (self.len as usize - 1)) % 64;
         let tail_pos = self.segs[tail_idx];
 
-        // 4 orthogonal neighbors on 8x8 grid with wrap-around
-        let neighbors = [
-            cell_to_pos(hr, (hc + 1) % 8), // Right
-            cell_to_pos(hr, (hc + 7) % 8), // Left
-            cell_to_pos((hr + 1) % 8, hc), // Down
-            cell_to_pos((hr + 7) % 8, hc), // Up
-        ];
+        // 4 orthogonal neighbors on 8x8 grid (NO wrap-around)
+        let mut neighbors = [None; 4];
+        let mut n_count = 0;
+        if hc < 7 {
+            neighbors[n_count] = Some(cell_to_pos(hr, hc + 1));
+            n_count += 1;
+        }
+        if hc > 0 {
+            neighbors[n_count] = Some(cell_to_pos(hr, hc - 1));
+            n_count += 1;
+        }
+        if hr < 7 {
+            neighbors[n_count] = Some(cell_to_pos(hr + 1, hc));
+            n_count += 1;
+        }
+        if hr > 0 {
+            neighbors[n_count] = Some(cell_to_pos(hr - 1, hc));
+            // n_count += 1; // unnecessary: we don't use n_count after this point
+        }
 
         let mut best_pos = (head_pos + 1) % 64; // Default cycle step
         let mut min_score = u16::MAX;
 
-        for &n_pos in neighbors.iter() {
-            if self.is_pos_occupied(n_pos) {
-                continue;
-            }
+        for &n_opt in neighbors.iter() {
+            if let Some(n_pos) = n_opt {
+                if self.is_pos_occupied(n_pos) {
+                    continue;
+                }
 
-            let is_default = n_pos == (head_pos + 1) % 64;
-            let is_safe_shortcut = cycle_dist(head_pos, n_pos) < cycle_dist(head_pos, tail_pos);
+                let is_default = n_pos == (head_pos + 1) % 64;
+                let is_safe_shortcut = cycle_dist(head_pos, n_pos) < cycle_dist(head_pos, tail_pos);
+                let does_not_skip_apple = cycle_dist(head_pos, n_pos) <= cycle_dist(head_pos, self.apple_path);
 
-            if !is_default && !is_safe_shortcut {
-                continue;
-            }
+                if !is_default && !(is_safe_shortcut && does_not_skip_apple) {
+                    continue;
+                }
 
-            // Score: primary = Manhattan grid distance, secondary = cycle distance
-            let g_dist = grid_dist(n_pos, self.apple_path) as u16;
-            let c_dist = cycle_dist(n_pos, self.apple_path) as u16;
-            let score = (g_dist << 8) | c_dist;
+                // Score: primary = Manhattan grid distance, secondary = cycle distance
+                let g_dist = grid_dist(n_pos, self.apple_path) as u16;
+                let c_dist = cycle_dist(n_pos, self.apple_path) as u16;
+                let score = (g_dist << 8) | c_dist;
 
-            if score < min_score {
-                min_score = score;
-                best_pos = n_pos;
+                if score < min_score {
+                    min_score = score;
+                    best_pos = n_pos;
+                }
             }
         }
 
@@ -248,19 +260,20 @@ impl SnakeSim {
     }
 
     fn place_apple(&mut self) {
+        self.lfsr = next_rand(self.lfsr);
+        let start_candidate = (self.lfsr % 64) as u8;
+        let mut candidate = start_candidate;
         for _ in 0..64u8 {
-            self.lfsr = lfsr_next(self.lfsr);
-            self.lfsr = lfsr_next(self.lfsr);
-            let candidate = (self.lfsr % 64) as u8;
             if !self.is_pos_occupied(candidate) {
                 self.apple_path = candidate;
                 return;
             }
+            candidate = (candidate + 1) % 64;
         }
         self.pause_ticks = PAUSE_TICKS;
     }
 
-    fn reset(&mut self) {
+    pub fn reset(&mut self) {
         self.segs = [0u8; 64];
         self.segs[0] = 0;
         self.segs[1] = 1;
@@ -272,12 +285,12 @@ impl SnakeSim {
         self.pause_ticks = 0;
         self.sub_step = false;
         for _ in 0..11u8 {
-            self.lfsr = lfsr_next(self.lfsr);
+            self.lfsr = next_rand(self.lfsr);
         }
         self.place_apple();
     }
 
-    /// Half-step preview for smooth sub-cell transition (tick 29).
+    /// Half-step preview for smooth sub-cell transition (tick 16).
     pub fn half_step(&mut self) {
         if self.pause_ticks > 0 {
             return;
@@ -299,6 +312,7 @@ impl SnakeSim {
         self.sub_step = true;
     }
 
+    /// Full step (tick 32).
     pub fn step(&mut self) {
         self.sub_step = false;
 
@@ -329,10 +343,6 @@ impl SnakeSim {
             } else {
                 self.place_apple();
             }
-        }
-
-        if self.step_count >= MAX_STEPS {
-            self.pause_ticks = PAUSE_TICKS;
         }
     }
 
@@ -373,14 +383,10 @@ impl SnakeSim {
             let new_btn = cell_to_btn(nr, nc);
 
             match self.next_dir {
-                Dir::Right => {
+                Dir::Right | Dir::Up => {
                     host_leds[new_btn * 2] = COLOR_HEAD;
                 }
-                Dir::Left => {
-                    host_leds[new_btn * 2 + 1] = COLOR_HEAD;
-                }
-                Dir::Down => {
-                    host_leds[new_btn * 2] = COLOR_HEAD;
+                Dir::Left | Dir::Down => {
                     host_leds[new_btn * 2 + 1] = COLOR_HEAD;
                 }
             }
@@ -390,15 +396,11 @@ impl SnakeSim {
                 let tail_btn = cell_to_btn(tr, tc);
 
                 match self.tail_dir {
-                    Dir::Right => {
+                    Dir::Right | Dir::Up => {
                         host_leds[tail_btn * 2 + 1] = Color::BLACK;
                     }
-                    Dir::Left => {
+                    Dir::Left | Dir::Down => {
                         host_leds[tail_btn * 2] = Color::BLACK;
-                    }
-                    Dir::Down => {
-                        host_leds[tail_btn * 2] = Color::BLACK;
-                        host_leds[tail_btn * 2 + 1] = Color::BLACK;
                     }
                 }
             }

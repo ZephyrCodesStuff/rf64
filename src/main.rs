@@ -79,6 +79,9 @@ fn main() -> ! {
     let bus_allocator = usb::create_usb_bus(dp.USB_DEVICE);
     let mut usb_stack = usb::UsbMidiStack::new(&bus_allocator);
 
+    // Initialize Timer1 for 1-second idle counting (prescaler 1024 => 15,625 Hz at 16 MHz)
+    dp.TC1.tccr1b().write(|w| unsafe { w.bits(0x05) });
+
     let pins = atmega_hal::pins!(dp);
     key_setup(pins.pd7, pins.pd6, pins.pc7);
 
@@ -119,19 +122,42 @@ fn main() -> ! {
     let mut animating = true;
     let mut snake_sim = boot_anim::SnakeSim::new();
     let mut life_timer: u8 = 0;
+    let mut seconds_idle: u16 = 0;
 
     // -------------------------------------------------------------------------
     // 3. Main Event & Frame Sync Loop
     // -------------------------------------------------------------------------
     loop {
+        // 0. Monitor 1-second hardware timer tick (15,625 Hz) for idle timeout
+        let tcnt = dp.TC1.tcnt1().read().bits();
+        if tcnt >= 15625 {
+            dp.TC1.tcnt1().write(|w| unsafe { w.bits(tcnt - 15625) });
+            seconds_idle += 1;
+
+            if seconds_idle >= 256 && !animating {
+                animating = true;
+                snake_sim.reset();
+                dirty = true;
+                seconds_idle = 0;
+            }
+        }
+
         // A. Poll & drain incoming USB MIDI packets from DAW
-        if midi_rx.drain_incoming_frame(&mut usb_stack, host_leds, &mut animating) {
+        let (midi_dirty, midi_active) =
+            midi_rx.drain_incoming_frame(&mut usb_stack, host_leds, &mut animating);
+        if midi_dirty {
             dirty = true;
+        }
+        if midi_active {
+            seconds_idle = 0;
+            dp.TC1.tcnt1().write(|w| unsafe { w.bits(0) });
         }
 
         // B. Key matrix scanning & debounced MIDI TX
         let pressed_keys = key_read_raw();
         if pressed_keys != 0 {
+            seconds_idle = 0;
+            dp.TC1.tcnt1().write(|w| unsafe { w.bits(0) });
             if animating {
                 animating = false; // Stop boot animation if physical button is pressed
                 host_leds.fill(Color::BLACK);

@@ -142,17 +142,18 @@ impl MidiRx {
     /// or a frame boundary is crossed.
     ///
     /// Updates `host_leds`, cancels `animating` if host data arrives, and returns
-    /// whether the LED grid received updates (`dirty`).
+    /// `(dirty, activity)` tuple.
     pub fn drain_incoming_frame(
         &self,
         usb_stack: &mut UsbMidiStack,
         host_leds: &mut [crate::led::Color; crate::led::TOTAL_LEDS],
         animating: &mut bool,
-    ) -> bool {
+    ) -> (bool, bool) {
         let mut idle_cycles = 0;
         let mut received_on = [false; 64];
         let mut force_draw = false;
         let mut dirty = false;
+        let mut activity = false;
 
         loop {
             usb_stack.poll();
@@ -160,10 +161,6 @@ impl MidiRx {
 
             while let Some(packet) = usb_stack.read_packet() {
                 read_any = true;
-                if *animating {
-                    *animating = false; // Stop animation if host sends data
-                    host_leds.fill(crate::led::Color::BLACK);
-                }
 
                 let status = packet[1];
                 let note = packet[2];
@@ -174,6 +171,15 @@ impl MidiRx {
                 let is_on = (cmd == 0x90) && (velocity > 0);
                 let is_off = (cmd == 0x80) || ((cmd == 0x90) && (velocity == 0));
                 let is_cc = cmd == 0xB0;
+
+                if is_on || is_off || is_cc {
+                    activity = true;
+                    if *animating {
+                        *animating = false; // Stop animation if host sends data
+                        host_leds.fill(crate::led::Color::BLACK);
+                        dirty = true;
+                    }
+                }
 
                 // Handle MIDI Panic / All Notes Off (CC 123) sent when playback stops.
                 if is_cc && note == 123 {
@@ -238,6 +244,6 @@ impl MidiRx {
             }
         }
 
-        dirty
+        (dirty, activity)
     }
 }
