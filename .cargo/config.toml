@@ -1,6 +1,9 @@
 [build]
 target = "avr-none"
-rustflags = ["-C", "target-cpu=atmega32u4"]
+rustflags = [
+    "-C", "target-cpu=atmega32u4",
+    "-C", "no-vectorize-loops",
+]
 
 [unstable]
 build-std = ["core"]
@@ -8,14 +11,13 @@ build-std = ["core"]
 [profile.dev]
 panic = "abort"
 lto = true
-opt-level = 3
+opt-level = "z"
 
 [profile.release]
 panic = "abort"
 codegen-units = 1
-# debug = true
-lto = true
-opt-level = 3
+lto = "fat"
+opt-level = "z"
 
 [target.avr-none]
 rustflags = [
@@ -27,4 +29,8 @@ rustflags = [
     "target-cpu=atmega32u4",
     "-C",
     "link-arg=-mmcu=atmega32u4",
-] # Now using fully-fledged avr-gcc and avr-libc
+    "-C",
+    "link-arg=-Wl,--gc-sections",
+    "-C",
+    "no-vectorize-loops",
+]

@@ -16,6 +16,38 @@ pub static mut BUS_ALLOC_STORAGE: MaybeUninit<UsbBusAllocator<TargetUsbBus>> =
 pub static mut USB_DEV_STORAGE: MaybeUninit<UsbDevice<'static, TargetUsbBus>> =
     MaybeUninit::uninit();
 pub static mut MIDI_STORAGE: MaybeUninit<MidiClass<'static, TargetUsbBus>> = MaybeUninit::uninit();
+pub static mut KEYBOARD_STORAGE: MaybeUninit<KeyboardClass<'static, TargetUsbBus>> =
+    MaybeUninit::uninit();
+pub static mut IS_KEYBOARD_MODE: bool = false;
+
+#[inline(never)]
+fn reset_usb_bus() {
+    unsafe {
+        core::ptr::write_volatile(0xE0 as *mut u8, 1);
+    }
+    crate::delay::delay_ms(100);
+    unsafe {
+        core::ptr::write_volatile(0xE0 as *mut u8, 0);
+    }
+}
+
+#[inline(never)]
+fn init_dev(alloc_ref: &'static UsbBusAllocator<TargetUsbBus>) {
+    let dev = UsbDeviceBuilder::new(alloc_ref, UsbVidPid(VID, PID))
+        .manufacturer("https://github.com/ZephyrCodesStuff/rf64")
+        .product("Rusty Fighter 64")
+        .serial_number(r"0xDEADBEEF")
+        .device_class(0x00)
+        .device_sub_class(0x00)
+        .device_protocol(0x00)
+        .max_power(480)
+        .build();
+
+    unsafe {
+        let p = core::ptr::addr_of_mut!(USB_DEV_STORAGE);
+        p.write(core::mem::MaybeUninit::new(dev));
+    }
+}
 
 /// Initialize the USB bus and MIDI stack into module-level static storage.
 /// Call once from `main()` before any USB activity.
@@ -36,15 +68,7 @@ pub fn init_global(usb: atmega_hal::pac::USB_DEVICE) {
     let midi = unsafe { (*core::ptr::addr_of_mut!(MIDI_STORAGE)).assume_init_mut() };
     usb_dev.poll(&mut [midi]);
 
-    // Force a robust 100ms USB detach to ensure macOS/Windows recognize the reset from bootloader
-    unsafe {
-        // UDCON register (SRAM 0xE0), bit 0 is DETACH
-        core::ptr::write_volatile(0xE0 as *mut u8, 1);
-    }
-    crate::delay::delay_ms(100);
-    unsafe {
-        core::ptr::write_volatile(0xE0 as *mut u8, 0);
-    }
+    reset_usb_bus();
 }
 
 #[inline(never)]
@@ -55,20 +79,35 @@ fn init_midi(alloc_ref: &'static UsbBusAllocator<TargetUsbBus>) {
     }
 }
 
+/// Initialize the USB bus and Keyboard stack into module-level static storage.
+/// Call once from `main()` when booting into Keyboard emulation mode.
 #[inline(never)]
-fn init_dev(alloc_ref: &'static UsbBusAllocator<TargetUsbBus>) {
-    let dev = UsbDeviceBuilder::new(alloc_ref, UsbVidPid(VID, PID))
-        .manufacturer("https://github.com/ZephyrCodesStuff/rf64")
-        .product("Rusty Fighter 64")
-        .serial_number(r"0xDEADBEEF")
-        .device_class(0x00)
-        .device_sub_class(0x00)
-        .device_protocol(0x00)
-        .max_power(480)
-        .build();
+pub fn init_keyboard_global(usb: atmega_hal::pac::USB_DEVICE) {
     unsafe {
-        let p = core::ptr::addr_of_mut!(USB_DEV_STORAGE);
-        p.write(core::mem::MaybeUninit::new(dev));
+        IS_KEYBOARD_MODE = true;
+    }
+    let alloc = atmega_usbd::UsbBus::new(usb);
+    let alloc_ref = unsafe {
+        let p = core::ptr::addr_of_mut!(BUS_ALLOC_STORAGE);
+        p.write(core::mem::MaybeUninit::new(alloc));
+        (*p).assume_init_ref()
+    };
+
+    init_keyboard(alloc_ref);
+    init_dev(alloc_ref);
+
+    let usb_dev = unsafe { (*core::ptr::addr_of_mut!(USB_DEV_STORAGE)).assume_init_mut() };
+    let keyboard = unsafe { (*core::ptr::addr_of_mut!(KEYBOARD_STORAGE)).assume_init_mut() };
+    usb_dev.poll(&mut [keyboard]);
+
+    reset_usb_bus();
+}
+
+#[inline(never)]
+fn init_keyboard(alloc_ref: &'static UsbBusAllocator<TargetUsbBus>) {
+    unsafe {
+        let p = core::ptr::addr_of_mut!(KEYBOARD_STORAGE);
+        p.write(core::mem::MaybeUninit::new(KeyboardClass::new(alloc_ref)));
     }
 }
 
@@ -279,10 +318,123 @@ impl<B: UsbBus> UsbClass<B> for MidiClass<'_, B> {
     }
 }
 
+/// Standard 63-byte USB HID Boot Keyboard Report Descriptor
+pub const KEYBOARD_REPORT_DESCRIPTOR: &[u8] = &[
+    0x05, 0x01, // USAGE_PAGE (Generic Desktop)
+    0x09, 0x06, // USAGE (Keyboard)
+    0xa1, 0x01, // COLLECTION (Application)
+    0x05, 0x07, //   USAGE_PAGE (Keyboard)
+    0x19, 0xe0, //   USAGE_MINIMUM (Keyboard LeftControl)
+    0x29, 0xe7, //   USAGE_MAXIMUM (Keyboard Right GUI)
+    0x15, 0x00, //   LOGICAL_MINIMUM (0)
+    0x25, 0x01, //   LOGICAL_MAXIMUM (1)
+    0x75, 0x01, //   REPORT_SIZE (1)
+    0x95, 0x08, //   REPORT_COUNT (8)
+    0x81, 0x02, //   INPUT (Data,Var,Abs)
+    0x95, 0x01, //   REPORT_COUNT (1)
+    0x75, 0x08, //   REPORT_SIZE (8)
+    0x81, 0x03, //   INPUT (Cnst,Var,Abs)
+    0x95, 0x05, //   REPORT_COUNT (5)
+    0x75, 0x01, //   REPORT_SIZE (1)
+    0x05, 0x08, //   USAGE_PAGE (LEDs)
+    0x19, 0x01, //   USAGE_MINIMUM (Num Lock)
+    0x29, 0x05, //   USAGE_MAXIMUM (Kana)
+    0x91, 0x02, //   OUTPUT (Data,Var,Abs)
+    0x95, 0x01, //   REPORT_COUNT (1)
+    0x75, 0x03, //   REPORT_SIZE (3)
+    0x91, 0x03, //   OUTPUT (Cnst,Var,Abs)
+    0x95, 0x06, //   REPORT_COUNT (6)
+    0x75, 0x08, //   REPORT_SIZE (8)
+    0x15, 0x00, //   LOGICAL_MINIMUM (0)
+    0x25, 0x65, //   LOGICAL_MAXIMUM (101)
+    0x05, 0x07, //   USAGE_PAGE (Keyboard)
+    0x19, 0x00, //   USAGE_MINIMUM (Reserved (no event indicated))
+    0x29, 0x65, //   USAGE_MAXIMUM (Keyboard Application)
+    0x81, 0x00, //   INPUT (Data,Ary,Abs)
+    0xc0,       // END_COLLECTION
+];
+
+/// USB HID Keyboard Class
+pub struct KeyboardClass<'a, B: UsbBus> {
+    interface: InterfaceNumber,
+    endpoint_in: EndpointIn<'a, B>,
+}
+
+impl<'a, B: UsbBus> KeyboardClass<'a, B> {
+    pub fn new(alloc: &'a UsbBusAllocator<B>) -> Self {
+        KeyboardClass {
+            interface: alloc.interface(),
+            endpoint_in: alloc.interrupt(8, 10),
+        }
+    }
+
+    pub fn send_report(&self, report: &[u8; 8]) -> usb_device::Result<usize> {
+        self.endpoint_in.write(report)
+    }
+}
+
+impl<B: UsbBus> UsbClass<B> for KeyboardClass<'_, B> {
+    fn get_configuration_descriptors(
+        &self,
+        writer: &mut DescriptorWriter,
+    ) -> usb_device::Result<()> {
+        writer.interface(
+            self.interface,
+            0x03, // HID Class
+            0x01, // Boot Subclass
+            0x01, // Keyboard Protocol
+        )?;
+
+        writer.write(
+            0x21, // HID Descriptor
+            &[
+                0x11, 0x01, // bcdHID 1.11
+                0x00,       // bCountryCode
+                0x01,       // bNumDescriptors
+                0x22,       // bDescriptorType (Report Descriptor)
+                KEYBOARD_REPORT_DESCRIPTOR.len() as u8, 0x00,
+            ],
+        )?;
+
+        writer.endpoint(&self.endpoint_in)?;
+        Ok(())
+    }
+
+    fn control_in(&mut self, xfer: ControlIn<B>) {
+        let req = xfer.request();
+        if req.request_type == usb_device::control::RequestType::Standard
+            && req.recipient == usb_device::control::Recipient::Interface
+            && req.request == usb_device::control::Request::GET_DESCRIPTOR
+            && (req.value >> 8) as u8 == 0x22
+        {
+            xfer.accept_with(KEYBOARD_REPORT_DESCRIPTOR).ok();
+        }
+    }
+
+    fn control_out(&mut self, xfer: ControlOut<B>) {
+        let req = xfer.request();
+        if req.request_type == usb_device::control::RequestType::Class
+            && req.recipient == usb_device::control::Recipient::Interface
+        {
+            match req.request {
+                0x0A => { xfer.accept().ok(); } // SET_IDLE
+                0x0B => { xfer.accept().ok(); } // SET_PROTOCOL
+                0x09 => { xfer.accept().ok(); } // SET_REPORT
+                _ => {}
+            }
+        }
+    }
+}
+
 pub fn poll() -> bool {
     let usb_dev = unsafe { (*core::ptr::addr_of_mut!(USB_DEV_STORAGE)).assume_init_mut() };
-    let midi = unsafe { (*core::ptr::addr_of_mut!(MIDI_STORAGE)).assume_init_mut() };
-    usb_dev.poll(&mut [midi])
+    if unsafe { IS_KEYBOARD_MODE } {
+        let keyboard = unsafe { (*core::ptr::addr_of_mut!(KEYBOARD_STORAGE)).assume_init_mut() };
+        usb_dev.poll(&mut [keyboard])
+    } else {
+        let midi = unsafe { (*core::ptr::addr_of_mut!(MIDI_STORAGE)).assume_init_mut() };
+        usb_dev.poll(&mut [midi])
+    }
 }
 
 pub fn read_packet() -> Option<[u8; 4]> {
@@ -298,4 +450,9 @@ pub fn unread_packet() {
 pub fn send_raw_packet(bytes: [u8; 4]) -> usb_device::Result<usize> {
     let midi = unsafe { (*core::ptr::addr_of_mut!(MIDI_STORAGE)).assume_init_mut() };
     midi.send_raw_packet(bytes)
+}
+
+pub fn send_keyboard_report(report: &[u8; 8]) -> usb_device::Result<usize> {
+    let keyboard = unsafe { (*core::ptr::addr_of_mut!(KEYBOARD_STORAGE)).assume_init_mut() };
+    keyboard.send_report(report)
 }

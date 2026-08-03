@@ -5,17 +5,17 @@
 mod boot_anim;
 mod bootloader;
 mod delay;
+mod fastled;
 mod gpio;
+mod keyboard;
 mod keys;
 mod led;
 mod mcu;
 mod midi;
 mod palette;
-mod usb;
-mod fastled;
 mod sysex;
+mod usb;
 
-use atmega_hal::Peripherals;
 use gpio::LedPins;
 use keys::{key_read_raw, key_setup};
 use led::{Color, LedDriver};
@@ -80,15 +80,10 @@ fn main() -> ! {
     init_hardware_safeguards();
 
     // -------------------------------------------------------------------------
-    // 2. Initialize HAL peripherals, USB stack, key matrix & LED driver
+    // 2. Initialize HAL peripherals, key matrix & LED driver
     // -------------------------------------------------------------------------
-    let dp = Peripherals::take().unwrap();
+    let dp = unsafe { atmega_hal::Peripherals::steal() };
     let _led_pins = LedPins::init(&dp.PORTB, &dp.PORTC);
-
-    // Initialize 48MHz USB PLL, then place UsbBusAllocator + UsbMidiStack into
-    // module-level statics (off the stack). Returns a &'static mut reference.
-    usb::init_usb_pll();
-    usb::init_global(dp.USB_DEVICE);
 
     // Initialize Timer1 for 1-second idle counting (prescaler 1024 => 15,625 Hz at 16 MHz)
     dp.TC1.tccr1b().write(|w| unsafe { w.bits(0x05) });
@@ -116,13 +111,79 @@ fn main() -> ! {
 
     // DEBUG: Trigger a panic if Button 1 (2nd button, bit 1) is held down at startup
     if (initial_keys & 0b10) != 0 {
-        panic!("Button 1 held at startup debug panic");
+        panic!("DEBUG: Button 1 held on boot, requesting panic handler.");
+    }
+
+    // 3rd button held on boot (bit 2) -> USB HID Keyboard Emulation Mode
+    let is_keyboard_mode = (initial_keys & 0b100) != 0;
+
+    // Initialize 48MHz USB PLL and corresponding USB stack
+    usb::init_usb_pll();
+    if is_keyboard_mode {
+        usb::init_keyboard_global(dp.USB_DEVICE);
+
+        // Signal Keyboard mode entry with checkerboard
+        let par_buf = unsafe { &mut *core::ptr::addr_of_mut!(PAR_BUF) };
+        led_driver.send_checkerboard_direct(par_buf, Color::WHITE);
+        crate::delay::delay_ms(1000);
+    } else {
+        usb::init_global(dp.USB_DEVICE);
     }
 
     // SAFETY: single-threaded; all statics are only accessed from this function.
     let host_leds = unsafe { &mut *core::ptr::addr_of_mut!(HOST_LEDS) };
     let btn_state = unsafe { &mut *core::ptr::addr_of_mut!(BTN_STATE) };
     let snake_sim = unsafe { &mut *core::ptr::addr_of_mut!(SNAKE_SIM) };
+
+    // -------------------------------------------------------------------------
+    // 3. Keyboard Mode Loop (if activated on boot)
+    // -------------------------------------------------------------------------
+    if is_keyboard_mode {
+        let mut prev_fn_pressed = false;
+
+        // Render initial category background colors for all keys (~10% brightness)
+        for btn in 0..64 {
+            let color = keyboard::get_button_color(btn, false, false);
+            host_leds[btn * 2] = color;
+            host_leds[btn * 2 + 1] = color;
+        }
+        let par_buf = unsafe { &mut *core::ptr::addr_of_mut!(PAR_BUF) };
+        led_driver.render_frame(par_buf, host_leds);
+
+        let mut prev_report = [0u8; 8];
+
+        loop {
+            crate::usb::poll();
+
+            let pressed_keys = key_read_raw();
+            let (report, is_fn_pressed) = keyboard::build_keyboard_report(pressed_keys);
+
+            let fn_changed = is_fn_pressed != prev_fn_pressed;
+            let report_changed = report != prev_report;
+
+            if report_changed {
+                let _ = crate::usb::send_keyboard_report(&report);
+                prev_report = report;
+            }
+
+            // Update LEDs if the HID report changed OR if the FN layer toggled
+            if report_changed || fn_changed {
+                prev_fn_pressed = is_fn_pressed;
+
+                // Full category color when pressed, dim category color when unpressed
+                // Colors change dynamically based on active layer!
+                for btn in 0..64 {
+                    let is_pressed = (pressed_keys & (1u64 << btn)) != 0;
+                    let color = keyboard::get_button_color(btn, is_pressed, is_fn_pressed);
+                    host_leds[btn * 2] = color;
+                    host_leds[btn * 2 + 1] = color;
+                }
+                let par_buf = unsafe { &mut *core::ptr::addr_of_mut!(PAR_BUF) };
+                led_driver.render_frame(par_buf, host_leds);
+            }
+        }
+    }
+
     let mut dirty = true; // Whether we should redraw
 
     // Blackout the entire grid ONCE at boot to clear residual LEDs from a previous session

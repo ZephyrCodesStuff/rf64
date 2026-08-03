@@ -17,9 +17,9 @@ atmega-hal = { git = "https://github.com/rahix/avr-hal", branch = "main", featur
     "atmega32u4",
     "rt",
 ] }
+avr-progmem = "0.4.0"
 
 # USB stack
 atmega-usbd = { git = "https://github.com/ZephyrCodesStuff/atmega-usbd", branch = "master" }
 usb-device = "0.2.9"
 usbd-midi = "0.1.0"
-avr-progmem = "0.4.0"

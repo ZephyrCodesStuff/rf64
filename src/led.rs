@@ -50,6 +50,13 @@ impl Color {
     /// Used for panic handler red checkerboard indicator.
     pub const RED: Self = Self { r: 255, g: 0, b: 0 };
 
+    /// Used for USB Keyboard mode indicator.
+    pub const WHITE: Self = Self {
+        r: 255,
+        g: 255,
+        b: 255,
+    };
+
     pub const fn new(r: u8, g: u8, b: u8) -> Self {
         Self { r, g, b }
     }
@@ -344,11 +351,7 @@ impl LedDriver {
     /// Complete frame render pipeline: computes safe scaling, fills parallel bit buffer,
     /// transmits parallel PORTB strands, polls USB, transmits sequential PC6 strand,
     /// polls USB, and latches the frame.
-    pub fn render_frame(
-        &self,
-        par_buf: &mut ParallelBitBuffer,
-        host_leds: &[Color; TOTAL_LEDS],
-    ) {
+    pub fn render_frame(&self, par_buf: &mut ParallelBitBuffer, host_leds: &[Color; TOTAL_LEDS]) {
         let final_scale = compute_safe_scale(host_leds);
 
         fill_parallel_buffer_into(par_buf, host_leds, final_scale);
