@@ -84,7 +84,7 @@ progmem! {
 }
 
 /// Returns the base RGB color for a given HID key code.
-pub fn get_key_color(key: u8) -> Color {
+pub const fn get_key_color(key: u8) -> Color {
     match key {
         // None/Empty
         0x00 => Color::new(0, 0, 0),
@@ -135,12 +135,11 @@ pub fn build_keyboard_report(pressed_keys: u64) -> ([u8; 8], bool) {
     // First pass: check for FN key
     let mut is_fn_pressed = false;
     for btn in 0..64 {
-        if (pressed_keys & (1u64 << btn)) != 0 {
-            if LAYER_0.load_at(btn) == 0xFF {
+        if (pressed_keys & (1u64 << btn)) != 0
+            && LAYER_0.load_at(btn) == 0xFF {
                 is_fn_pressed = true;
                 break;
             }
-        }
     }
 
     // Second pass: build report from active layer
