@@ -5,13 +5,13 @@
 #[cfg(feature = "boot-anim")]
 mod boot_anim;
 mod bootloader;
+mod buttons;
 mod delay;
 #[cfg(feature = "apollo")]
 mod fastled;
 mod gpio;
 #[cfg(feature = "keyboard")]
 mod keyboard;
-mod keys;
 mod led;
 mod mcu;
 mod midi;
@@ -20,11 +20,11 @@ mod palette;
 mod sysex;
 mod usb;
 
+use buttons::{buttons_read_raw, buttons_setup};
 use gpio::LedPins;
-use keys::{key_read_raw, key_setup};
 use led::{Color, LedDriver};
 use mcu::init_hardware_safeguards;
-use midi::{MidiRx, process_keys};
+use midi::{MidiRx, process_buttons};
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
@@ -86,28 +86,29 @@ fn main() -> ! {
     init_hardware_safeguards();
 
     // -------------------------------------------------------------------------
-    // 2. Initialize HAL peripherals, key matrix & LED driver
+    // 2. Initialize HAL peripherals, button matrix & LED driver
     // -------------------------------------------------------------------------
     let dp = unsafe { atmega_hal::Peripherals::steal() };
     let _led_pins = LedPins::init(&dp.PORTB, &dp.PORTC);
 
     // Initialize Timer1 for 1-second idle counting (prescaler 1024 => 15,625 Hz at 16 MHz)
+    #[cfg(feature = "boot-anim")]
     dp.TC1.tccr1b().write(|w| unsafe { w.bits(0x05) });
 
     let pins = atmega_hal::pins!(dp);
-    key_setup(pins.pd7, pins.pd6, pins.pc7);
+    buttons_setup(pins.pd7, pins.pd6, pins.pc7);
 
     // Give hardware (WS2812 LEDs and CD4021B shift registers) a moment to stabilize
-    // their power state before we read keys or blast LED data.
+    // their power state before we read buttons or blast LED data.
     crate::delay::delay_ms(50);
 
     let led_driver = LedDriver::new();
     let midi_rx = MidiRx::new();
 
-    let initial_keys = key_read_raw();
+    let initial_buttons = buttons_read_raw();
 
     // Jump into DFU bootloader if Button 0 (bit 0) is held down at startup
-    if bootloader::bootloader_combo_held(initial_keys) {
+    if bootloader::bootloader_combo_held(initial_buttons) {
         // Signal bootloader entry with orange checkerboard — zero stack allocation.
         let par_buf = unsafe { &mut *core::ptr::addr_of_mut!(PAR_BUF) };
         led_driver.send_checkerboard_direct(par_buf, Color::ORANGE);
@@ -116,13 +117,13 @@ fn main() -> ! {
     }
 
     // DEBUG: Trigger a panic if Button 1 (2nd button, bit 1) is held down at startup
-    if (initial_keys & 0b10) != 0 {
+    if (initial_buttons & 0b10) != 0 {
         panic!("DEBUG: Button 1 held on boot, requesting panic handler.");
     }
 
     // 3rd button held on boot (bit 2) -> USB HID Keyboard Emulation Mode
     #[cfg(feature = "keyboard")]
-    let is_keyboard_mode = (initial_keys & 0b100) != 0;
+    let is_keyboard_mode = (initial_buttons & 0b100) != 0;
 
     // Initialize 48MHz USB PLL and corresponding USB stack
     usb::init_usb_pll();
@@ -155,7 +156,7 @@ fn main() -> ! {
     if is_keyboard_mode {
         let mut prev_fn_pressed = false;
 
-        // Render initial category background colors for all keys (~10% brightness)
+        // Render initial category background colors for all buttons (~10% brightness)
         for btn in 0..64 {
             let color = keyboard::get_button_color(btn, false, false);
             host_leds[btn * 2] = color;
@@ -169,8 +170,8 @@ fn main() -> ! {
         loop {
             crate::usb::poll();
 
-            let pressed_keys = key_read_raw();
-            let (report, is_fn_pressed) = keyboard::build_keyboard_report(pressed_keys);
+            let pressed_buttons = buttons_read_raw();
+            let (report, is_fn_pressed) = keyboard::build_keyboard_report(pressed_buttons);
 
             let fn_changed = is_fn_pressed != prev_fn_pressed;
             let report_changed = report != prev_report;
@@ -187,7 +188,7 @@ fn main() -> ! {
                 // Full category color when pressed, dim category color when unpressed
                 // Colors change dynamically based on active layer!
                 for btn in 0..64 {
-                    let is_pressed = (pressed_keys & (1u64 << btn)) != 0;
+                    let is_pressed = (pressed_buttons & (1u64 << btn)) != 0;
                     let color = keyboard::get_button_color(btn, is_pressed, is_fn_pressed);
                     host_leds[btn * 2] = color;
                     host_leds[btn * 2 + 1] = color;
@@ -213,6 +214,7 @@ fn main() -> ! {
     #[cfg(feature = "boot-anim")]
     let mut life_timer: u8 = 0;
 
+    #[cfg(feature = "boot-anim")]
     let mut seconds_idle: u16 = 0;
 
     // -------------------------------------------------------------------------
@@ -223,19 +225,19 @@ fn main() -> ! {
         crate::usb::poll();
 
         // 0. Monitor 1-second hardware timer tick (15,625 Hz) for idle timeout
-        let tcnt = dp.TC1.tcnt1().read().bits();
-        if tcnt >= 15625 {
-            dp.TC1.tcnt1().write(|w| unsafe { w.bits(tcnt - 15625) });
-            seconds_idle += 1;
+        #[cfg(feature = "boot-anim")]
+        {
+            let tcnt = dp.TC1.tcnt1().read().bits();
+            if tcnt >= 15625 {
+                dp.TC1.tcnt1().write(|w| unsafe { w.bits(tcnt - 15625) });
+                seconds_idle += 1;
 
-            if seconds_idle >= 256 && !animating {
-                #[cfg(feature = "boot-anim")]
-                {
+                if seconds_idle >= 256 && !animating {
                     animating = true;
                     snake_sim.reset();
                     dirty = true;
+                    seconds_idle = 0;
                 }
-                seconds_idle = 0;
             }
         }
 
@@ -245,28 +247,37 @@ fn main() -> ! {
         #[cfg(not(feature = "apollo"))]
         let sysex_parser_opt: Option<&mut ()> = None;
 
-        let (midi_dirty, midi_active) =
-            midi_rx.drain_incoming_frame(host_leds, &mut animating, sysex_parser_opt);
-        if midi_dirty {
+        let midi = midi_rx.drain_incoming_frame(host_leds, &mut animating, sysex_parser_opt);
+
+        // Midi dirty
+        if midi.0 {
             dirty = true;
         }
-        if midi_active {
+
+        // Midi activity
+        #[cfg(feature = "boot-anim")]
+        if midi.1 {
             seconds_idle = 0;
             dp.TC1.tcnt1().write(|w| unsafe { w.bits(0) });
         }
 
-        // B. Key matrix scanning & debounced MIDI TX
-        let pressed_keys = key_read_raw();
-        if pressed_keys != 0 {
-            seconds_idle = 0;
-            dp.TC1.tcnt1().write(|w| unsafe { w.bits(0) });
+        // B. Button matrix scanning & debounced MIDI TX
+        let pressed_buttons = buttons_read_raw();
+        if pressed_buttons != 0 {
+            // Reset idle timer on physical button press
+            #[cfg(feature = "boot-anim")]
+            {
+                seconds_idle = 0;
+                dp.TC1.tcnt1().write(|w| unsafe { w.bits(0) });
+            }
+
             if animating {
                 animating = false; // Stop boot animation if physical button is pressed
                 host_leds.fill(Color::BLACK);
             }
             dirty = true;
         }
-        process_keys(pressed_keys, btn_state);
+        process_buttons(pressed_buttons, btn_state);
 
         // C. Boot animation ticker (snake game)
         //

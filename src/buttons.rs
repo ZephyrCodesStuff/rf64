@@ -14,13 +14,13 @@ const PORTD_IO: u8 = 0x0B;
 // Bit indexes
 const CLOCK_BIT: u8 = 7; // PD7
 const LATCH_BIT: u8 = 6; // PD6
-const DATA_BIT: u8 = 7;  // PC7
+const DATA_BIT: u8 = 7; // PC7
 
 use atmega_hal::port::mode::{Floating, Input};
-use atmega_hal::port::{Pin, PC7, PD6, PD7};
+use atmega_hal::port::{PC7, PD6, PD7, Pin};
 
-/// Initialize key matrix shift register pins using safe HAL abstractions.
-pub fn key_setup(
+/// Initialize button matrix shift register pins using safe HAL abstractions.
+pub fn buttons_setup(
     clock: Pin<Input<Floating>, PD7>,
     latch: Pin<Input<Floating>, PD6>,
     data: Pin<Input<Floating>, PC7>,
@@ -30,9 +30,10 @@ pub fn key_setup(
     let _ = data.into_pull_up_input();
 }
 
-/// Read all 64 keys immediately matching exact C firmware key.c algorithm.
+/// Read all 64 buttons immediately.
+///
 /// Returns a bitmask where bit N = 1 means button N is currently pressed.
-pub fn key_read_raw() -> u64 {
+pub fn buttons_read_raw() -> u64 {
     unsafe {
         let mut value: u64 = 0;
         let mut bit: u64 = 1;

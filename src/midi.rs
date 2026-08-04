@@ -71,12 +71,12 @@ fn note_from_u8(n: u8) -> Note {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Process the current raw key bitmask against the previous debounce state.
+/// Process the current raw button bitmask against the previous debounce state.
 /// Sends NoteOn/NoteOff immediately on first edge, then locks out for
 /// `DEBOUNCE_CYCLES` cycles to suppress bounce.
 ///
-/// Call once per main-loop iteration, after `key_read_raw()`.
-pub fn process_keys(raw: u64, state: &mut ButtonState) {
+/// Call once per main-loop iteration, after `buttons_read_raw()`.
+pub fn process_buttons(raw: u64, state: &mut ButtonState) {
     for btn in 0usize..64 {
         let pressed = (raw & (1u64 << btn)) != 0;
 
