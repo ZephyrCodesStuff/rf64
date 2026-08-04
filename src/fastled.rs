@@ -1,6 +1,6 @@
 //! FastRGB handling for high-speed SysEx LED updates.
 //!
-//! Provides the decompression algorithms used by Apollo Studio and other 
+//! Provides the decompression algorithms used by Apollo Studio and other
 //! high-performance host software to update the entire grid with minimal USB overhead.
 
 use crate::led::{Color, TOTAL_LEDS};
@@ -25,7 +25,7 @@ const fn fastrgb_set_unsafe(p: u8, r: u8, g: u8, b: u8, host_leds: &mut [Color; 
         let b8 = if b == 0 { 0 } else { (b << 2) | (b >> 4) };
 
         let c = Color::new(r8, g8, b8);
-        
+
         // Two LEDs per button. Mapping from midi.rs channel handling.
         let base_led = (p as usize) * 2;
         if base_led + 1 < TOTAL_LEDS {
@@ -98,20 +98,36 @@ pub fn fastrgb_decompress(data: &[u8], host_leds: &mut [Color; TOTAL_LEDS]) {
 
                     // Quadrant mirror
                     if (x & 0b00100000) != 0 {
-                        fastrgb_set_unsafe((x & 0b00011100) | (x_inv & 0b00000011), r, g, b, host_leds);
-                        fastrgb_set_unsafe((x & 0b00100011) | (x_inv & 0b00011100), r, g, b, host_leds);
+                        fastrgb_set_unsafe(
+                            (x & 0b00011100) | (x_inv & 0b00000011),
+                            r,
+                            g,
+                            b,
+                            host_leds,
+                        );
+                        fastrgb_set_unsafe(
+                            (x & 0b00100011) | (x_inv & 0b00011100),
+                            r,
+                            g,
+                            b,
+                            host_leds,
+                        );
                     }
                 }
             } else if (x & 0b00001000) != 0 {
                 // Entire column
-                let col = x & if (x & 0b00000100) != 0 { 0b00100011 } else { 0b00000011 };
-                for k in 0..8 {
+                let col = x & if (x & 0b00000100) != 0 {
+                    0b00100011
+                } else {
+                    0b00000011
+                };
+                for k in 0..core::hint::black_box(8) {
                     fastrgb_set_unsafe(col | (k << 2), r, g, b, host_leds);
                 }
             } else {
                 // Entire row
                 let row = (x & 0b00000111) << 2;
-                for k in 0..4 {
+                for k in 0..core::hint::black_box(4) {
                     fastrgb_set_unsafe(row | k, r, g, b, host_leds);
                     fastrgb_set_unsafe(row | 0b00100000 | k, r, g, b, host_leds);
                 }

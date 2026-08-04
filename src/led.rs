@@ -65,7 +65,11 @@ impl Color {
     /// Dynamically scale brightness by a fraction (scale / 256).
     /// If an original color channel was > 0, we ensure it never rounds down to 0,
     /// so that very dim colors aren't entirely extinguished by scaling.
-    pub const fn scale_brightness(self, scale: u16) -> Self {
+    #[inline(never)]
+    pub fn scale_brightness(self, scale: u16) -> Self {
+        if scale >= 256 {
+            return self;
+        }
         let sr = (self.r as u16 * scale) >> 8;
         let sg = (self.g as u16 * scale) >> 8;
         let sb = (self.b as u16 * scale) >> 8;
@@ -75,6 +79,14 @@ impl Color {
             g: if self.g > 0 && sg == 0 { 1 } else { sg as u8 },
             b: if self.b > 0 && sb == 0 { 1 } else { sb as u8 },
         }
+    }
+}
+
+pub fn compute_power_scale(total_sum: u32) -> u16 {
+    if total_sum > SAFE_MAX_COLOR_SUM {
+        49600u16 / (total_sum >> 5) as u16
+    } else {
+        256
     }
 }
 
@@ -95,11 +107,7 @@ pub fn compute_safe_scale(host_leds: &[Color; TOTAL_LEDS]) -> u16 {
         }
     }
 
-    let power_scale = if total_sum > SAFE_MAX_COLOR_SUM {
-        ((SAFE_MAX_COLOR_SUM * 256) / total_sum) as u16
-    } else {
-        256
-    };
+    let power_scale = compute_power_scale(total_sum);
 
     let bright_scale = if max_component > SAFE_MAX_PIXEL_COMPONENT {
         (SAFE_MAX_PIXEL_COMPONENT as u16 * 256) / max_component as u16
@@ -379,55 +387,28 @@ impl LedDriver {
         // For a 32-LED checkerboard at 16 ON buttons × 2 LEDs × R=255:
         // total = 16 * 2 * 255 = 8160 units. Apply the same power cap as normal.
         //
-        // Simple fixed scale: 16 ON buttons × 2 LEDs × (r+g+b) vs SAFE_MAX_COLOR_SUM.
-        let num_on_leds: u32 = 32; // 16 buttons ON × 2 LEDs each per strand pair
+        // Simple fixed scale: 32 ON buttons × 2 LEDs × (r+g+b) vs SAFE_MAX_COLOR_SUM.
+        let num_on_leds: u32 = 64; // 32 buttons ON × 2 LEDs each across 64 buttons total
         let per_led_sum = color.r as u32 + color.g as u32 + color.b as u32;
         let total_sum = per_led_sum * num_on_leds;
-        let scale: u16 = if total_sum > SAFE_MAX_COLOR_SUM {
-            ((SAFE_MAX_COLOR_SUM * 256) / total_sum) as u16
-        } else {
-            256
-        };
+        let scale: u16 = compute_power_scale(total_sum);
         let c = color.scale_brightness(scale);
 
         // Fill par_buf for strands 0, 2, 3 simultaneously (PORTB parallel).
-        // Each mask byte: bit6=strand0, bit5=strand2, bit4=strand3, for the same LED position.
         let mut idx = 0usize;
         for led_pos in 0..LEDS_PER_STRAND {
             let btn_in_strand = led_pos / 2; // 0..15
+            let is_on = ((btn_in_strand >> 3) + (btn_in_strand & 7)) & 1 == 0;
 
-            // Strand 0: global button = 0..15 (rows 0-1, row = btn/8, col = btn%8)
-            let btn0 = btn_in_strand; // buttons 0..15
-            let on0 = (btn0 / 8 + btn0 % 8) % 2 == 0;
-            let (g0, r0, b0) = if on0 {
+            let (g, r, b) = if is_on {
                 (c.g, c.r, c.b)
             } else {
                 (0u8, 0u8, 0u8)
             };
 
-            // Strand 2: global button = 32..47 (rows 4-5)
-            let btn2 = 32 + btn_in_strand;
-            let on2 = (btn2 / 8 + btn2 % 8) % 2 == 0;
-            let (g2, r2, b2) = if on2 {
-                (c.g, c.r, c.b)
-            } else {
-                (0u8, 0u8, 0u8)
-            };
-
-            // Strand 3: global button = 48..63 (rows 6-7)
-            let btn3 = 48 + btn_in_strand;
-            let on3 = (btn3 / 8 + btn3 % 8) % 2 == 0;
-            let (g3, r3, b3) = if on3 {
-                (c.g, c.r, c.b)
-            } else {
-                (0u8, 0u8, 0u8)
-            };
-
-            // Fill the 24 mask bytes for this LED position (8 bits × 3 WS2812 bytes) into par_buf.
-            for (b0v, b2v, b3v) in [(g0, g2, g3), (r0, r2, r3), (b0, b2, b3)] {
+            for val in [g, r, b] {
                 for bit in (0..8u8).rev() {
-                    par_buf.masks[idx] =
-                        ((b0v >> bit) & 1) << 6 | ((b2v >> bit) & 1) << 5 | ((b3v >> bit) & 1) << 4;
+                    par_buf.masks[idx] = if (val & (1 << bit)) != 0 { 0x70 } else { 0x00 };
                     idx += 1;
                 }
             }
@@ -438,9 +419,8 @@ impl LedDriver {
         unsafe {
             for led_pos in 0..LEDS_PER_STRAND {
                 let btn_in_strand = led_pos / 2;
-                let btn1 = 16 + btn_in_strand;
-                let on1 = (btn1 / 8 + btn1 % 8) % 2 == 0;
-                let (g, r, b) = if on1 { (c.g, c.r, c.b) } else { (0, 0, 0) };
+                let is_on = ((btn_in_strand >> 3) + (btn_in_strand & 7)) & 1 == 0;
+                let (g, r, b) = if is_on { (c.g, c.r, c.b) } else { (0, 0, 0) };
                 send_byte_pc6(g);
                 send_byte_pc6(r);
                 send_byte_pc6(b);

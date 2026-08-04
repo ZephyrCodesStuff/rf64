@@ -22,7 +22,6 @@ pub static mut KEYBOARD_STORAGE: MaybeUninit<KeyboardClass<'static, TargetUsbBus
 #[cfg(feature = "keyboard")]
 pub static mut IS_KEYBOARD_MODE: bool = false;
 
-#[inline(never)]
 fn reset_usb_bus() {
     unsafe {
         core::ptr::write_volatile(0xE0 as *mut u8, 1);
@@ -33,7 +32,6 @@ fn reset_usb_bus() {
     }
 }
 
-#[inline(never)]
 fn init_dev(alloc_ref: &'static UsbBusAllocator<TargetUsbBus>) {
     let dev = UsbDeviceBuilder::new(alloc_ref, UsbVidPid(VID, PID))
         .manufacturer("https://github.com/ZephyrCodesStuff/rf64")
@@ -54,7 +52,6 @@ fn init_dev(alloc_ref: &'static UsbBusAllocator<TargetUsbBus>) {
 
 /// Initialize the USB bus and MIDI stack into module-level static storage.
 /// Call once from `main()` before any USB activity.
-#[inline(never)]
 pub fn init_global(usb: atmega_hal::pac::USB_DEVICE) {
     let alloc = atmega_usbd::UsbBus::new(usb);
     let alloc_ref = unsafe {
@@ -74,7 +71,6 @@ pub fn init_global(usb: atmega_hal::pac::USB_DEVICE) {
     reset_usb_bus();
 }
 
-#[inline(never)]
 fn init_midi(alloc_ref: &'static UsbBusAllocator<TargetUsbBus>) {
     unsafe {
         let p = core::ptr::addr_of_mut!(MIDI_STORAGE);
@@ -85,7 +81,6 @@ fn init_midi(alloc_ref: &'static UsbBusAllocator<TargetUsbBus>) {
 /// Initialize the USB bus and Keyboard stack into module-level static storage.
 /// Call once from `main()` when booting into Keyboard emulation mode.
 #[cfg(feature = "keyboard")]
-#[inline(never)]
 pub fn init_keyboard_global(usb: atmega_hal::pac::USB_DEVICE) {
     unsafe {
         IS_KEYBOARD_MODE = true;
@@ -108,7 +103,6 @@ pub fn init_keyboard_global(usb: atmega_hal::pac::USB_DEVICE) {
 }
 
 #[cfg(feature = "keyboard")]
-#[inline(never)]
 fn init_keyboard(alloc_ref: &'static UsbBusAllocator<TargetUsbBus>) {
     unsafe {
         let p = core::ptr::addr_of_mut!(KEYBOARD_STORAGE);
@@ -357,7 +351,7 @@ pub const KEYBOARD_REPORT_DESCRIPTOR: &[u8] = &[
     0x19, 0x00, //   USAGE_MINIMUM (Reserved (no event indicated))
     0x29, 0x65, //   USAGE_MAXIMUM (Keyboard Application)
     0x81, 0x00, //   INPUT (Data,Ary,Abs)
-    0xc0,       // END_COLLECTION
+    0xc0, // END_COLLECTION
 ];
 
 /// USB HID Keyboard Class
@@ -397,11 +391,13 @@ impl<B: UsbBus> UsbClass<B> for KeyboardClass<'_, B> {
         writer.write(
             0x21, // HID Descriptor
             &[
-                0x11, 0x01, // bcdHID 1.11
-                0x00,       // bCountryCode
-                0x01,       // bNumDescriptors
-                0x22,       // bDescriptorType (Report Descriptor)
-                KEYBOARD_REPORT_DESCRIPTOR.len() as u8, 0x00,
+                0x11,
+                0x01, // bcdHID 1.11
+                0x00, // bCountryCode
+                0x01, // bNumDescriptors
+                0x22, // bDescriptorType (Report Descriptor)
+                KEYBOARD_REPORT_DESCRIPTOR.len() as u8,
+                0x00,
             ],
         )?;
 
@@ -426,9 +422,15 @@ impl<B: UsbBus> UsbClass<B> for KeyboardClass<'_, B> {
             && req.recipient == usb_device::control::Recipient::Interface
         {
             match req.request {
-                0x0A => { xfer.accept().ok(); } // SET_IDLE
-                0x0B => { xfer.accept().ok(); } // SET_PROTOCOL
-                0x09 => { xfer.accept().ok(); } // SET_REPORT
+                0x0A => {
+                    xfer.accept().ok();
+                } // SET_IDLE
+                0x0B => {
+                    xfer.accept().ok();
+                } // SET_PROTOCOL
+                0x09 => {
+                    xfer.accept().ok();
+                } // SET_REPORT
                 _ => {}
             }
         }
@@ -437,13 +439,13 @@ impl<B: UsbBus> UsbClass<B> for KeyboardClass<'_, B> {
 
 pub fn poll() -> bool {
     let usb_dev = unsafe { (*core::ptr::addr_of_mut!(USB_DEV_STORAGE)).assume_init_mut() };
-    
+
     #[cfg(feature = "keyboard")]
     if unsafe { IS_KEYBOARD_MODE } {
         let keyboard = unsafe { (*core::ptr::addr_of_mut!(KEYBOARD_STORAGE)).assume_init_mut() };
         return usb_dev.poll(&mut [keyboard]);
     }
-    
+
     let midi = unsafe { (*core::ptr::addr_of_mut!(MIDI_STORAGE)).assume_init_mut() };
     usb_dev.poll(&mut [midi])
 }
