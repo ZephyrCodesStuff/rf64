@@ -51,49 +51,74 @@ const fn cell_to_btn(row: u8, col: u8) -> usize {
     half_offset + (row as usize * 4) + c
 }
 
-/// Convert Hamiltonian cycle position `pos` (0–63) to spatial `(row, col)`.
+const POS_TO_CELL_LUT: [u8; 64] = {
+    let mut lut = [0; 64];
+    let mut pos = 0;
+    while pos < 64 {
+        let (r, c) = match pos {
+            0..=7 => (0, pos),
+            8..=14 => (1, 7 - (pos - 8)),
+            15..=21 => (2, 1 + (pos - 15)),
+            22..=28 => (3, 7 - (pos - 22)),
+            29..=35 => (4, 1 + (pos - 29)),
+            36..=42 => (5, 7 - (pos - 36)),
+            43..=49 => (6, 1 + (pos - 43)),
+            50..=57 => (7, 7 - (pos - 50)),
+            58..=63 => (6 - (pos - 58), 0),
+            _ => (0, 0),
+        };
+        lut[pos as usize] = (r << 3) | c;
+        pos += 1;
+    }
+    lut
+};
+
+const CELL_TO_POS_LUT: [u8; 64] = {
+    let mut lut = [0; 64];
+    let mut r = 0;
+    while r < 8 {
+        let mut c = 0;
+        while c < 8 {
+            let pos = match (r, c) {
+                (0, c) => c,
+                (1, 0) => 63,
+                (1, c) => 8 + (7 - c),
+                (2, 0) => 62,
+                (2, c) => 15 + (c - 1),
+                (3, 0) => 61,
+                (3, c) => 22 + (7 - c),
+                (4, 0) => 60,
+                (4, c) => 29 + (c - 1),
+                (5, 0) => 59,
+                (5, c) => 36 + (7 - c),
+                (6, 0) => 58,
+                (6, c) => 43 + (c - 1),
+                (7, c) => 50 + (7 - c),
+                _ => 0,
+            };
+            lut[((r << 3) | c) as usize] = pos;
+            c += 1;
+        }
+        r += 1;
+    }
+    lut
+};
+
 #[inline(always)]
 const fn pos_to_cell(pos: u8) -> (u8, u8) {
-    match pos {
-        0..=7 => (0, pos),
-        8..=14 => (1, 7 - (pos - 8)),
-        15..=21 => (2, 1 + (pos - 15)),
-        22..=28 => (3, 7 - (pos - 22)),
-        29..=35 => (4, 1 + (pos - 29)),
-        36..=42 => (5, 7 - (pos - 36)),
-        43..=49 => (6, 1 + (pos - 43)),
-        50..=57 => (7, 7 - (pos - 50)),
-        58..=63 => (6 - (pos - 58), 0),
-        _ => (0, 0),
-    }
+    let val = POS_TO_CELL_LUT[(pos & 63) as usize];
+    (val >> 3, val & 7)
 }
 
-/// Convert spatial `(row, col)` to Hamiltonian cycle position `pos` (0–63).
 #[inline(always)]
 const fn cell_to_pos(row: u8, col: u8) -> u8 {
-    match (row, col) {
-        (0, c) => c,
-        (1, 0) => 63,
-        (1, c) => 8 + (7 - c),
-        (2, 0) => 62,
-        (2, c) => 15 + (c - 1),
-        (3, 0) => 61,
-        (3, c) => 22 + (7 - c),
-        (4, 0) => 60,
-        (4, c) => 29 + (c - 1),
-        (5, 0) => 59,
-        (5, c) => 36 + (7 - c),
-        (6, 0) => 58,
-        (6, c) => 43 + (c - 1),
-        (7, c) => 50 + (7 - c),
-        _ => 0,
-    }
+    CELL_TO_POS_LUT[(((row & 7) << 3) | (col & 7)) as usize]
 }
 
 /// Forward distance between two positions along the Hamiltonian cycle (0–63).
 #[inline(always)]
 const fn cycle_dist(from: u8, to: u8) -> u8 {
-    (to + 64 - from) % 64
+    (to + 64 - from) & 63
 }
 
 /// Manhattan grid distance.
@@ -110,11 +135,11 @@ const fn get_dir(from_pos: u8, to_pos: u8) -> Dir {
     let (fr, fc) = pos_to_cell(from_pos);
     let (tr, tc) = pos_to_cell(to_pos);
 
-    if tc == (fc + 1) % 8 {
+    if tc == (fc + 1) & 7 {
         Dir::Right
-    } else if tc == (fc + 7) % 8 {
+    } else if tc == (fc + 7) & 7 {
         Dir::Left
-    } else if tr == (fr + 1) % 8 {
+    } else if tr == (fr + 1) & 7 {
         Dir::Up
     } else {
         Dir::Down
@@ -191,7 +216,7 @@ impl SnakeSim {
             self.len as usize - 1
         };
         for i in 0..check_len {
-            let idx = (self.head_idx + 64 - i) % 64;
+            let idx = (self.head_idx + 64 - i) & 63;
             if self.segs[idx] == pos {
                 return true;
             }
@@ -204,71 +229,79 @@ impl SnakeSim {
         let head_pos = self.segs[self.head_idx];
         let (hr, hc) = pos_to_cell(head_pos);
 
-        let tail_idx = (self.head_idx + 64 - (self.len as usize - 1)) % 64;
+        let tail_idx = (self.head_idx + 64 - (self.len as usize - 1)) & 63;
         let tail_pos = self.segs[tail_idx];
 
         // 4 orthogonal neighbors on 8x8 grid (NO wrap-around)
-        let mut neighbors = [None; 4];
+        let mut neighbors = [0u8; 4];
         let mut n_count = 0;
         if hc < 7 {
-            neighbors[n_count] = Some(cell_to_pos(hr, hc + 1));
+            neighbors[n_count] = cell_to_pos(hr, hc + 1);
             n_count += 1;
         }
         if hc > 0 {
-            neighbors[n_count] = Some(cell_to_pos(hr, hc - 1));
+            neighbors[n_count] = cell_to_pos(hr, hc - 1);
             n_count += 1;
         }
         if hr < 7 {
-            neighbors[n_count] = Some(cell_to_pos(hr + 1, hc));
+            neighbors[n_count] = cell_to_pos(hr + 1, hc);
             n_count += 1;
         }
         if hr > 0 {
-            neighbors[n_count] = Some(cell_to_pos(hr - 1, hc));
-            // n_count += 1; // unnecessary: we don't use n_count after this point
+            neighbors[n_count] = cell_to_pos(hr - 1, hc);
+            n_count += 1;
         }
 
-        let mut best_pos = (head_pos + 1) % 64; // Default cycle step
-        let mut min_score = u16::MAX;
+        let mut best_pos = (head_pos + 1) & 63; // Default cycle step
+        let mut min_g_dist = u8::MAX;
+        let mut min_c_dist = u8::MAX;
 
-        for &n_opt in neighbors.iter() {
-            if let Some(n_pos) = n_opt {
-                if self.is_pos_occupied(n_pos) {
-                    continue;
-                }
+        for i in 0..n_count {
+            let n_pos = neighbors[i];
+            if self.is_pos_occupied(n_pos) {
+                continue;
+            }
 
-                let is_default = n_pos == (head_pos + 1) % 64;
-                let is_safe_shortcut = cycle_dist(head_pos, n_pos) < cycle_dist(head_pos, tail_pos);
-                let does_not_skip_apple = cycle_dist(head_pos, n_pos) <= cycle_dist(head_pos, self.apple_path);
+            let is_default = n_pos == (head_pos + 1) & 63;
+            let is_safe_shortcut = cycle_dist(head_pos, n_pos) < cycle_dist(head_pos, tail_pos);
+            let does_not_skip_apple =
+                cycle_dist(head_pos, n_pos) <= cycle_dist(head_pos, self.apple_path);
 
-                if !is_default && !(is_safe_shortcut && does_not_skip_apple) {
-                    continue;
-                }
+            if !is_default && !(is_safe_shortcut && does_not_skip_apple) {
+                continue;
+            }
 
-                // Score: primary = Manhattan grid distance, secondary = cycle distance
-                let g_dist = grid_dist(n_pos, self.apple_path) as u16;
-                let c_dist = cycle_dist(n_pos, self.apple_path) as u16;
-                let score = (g_dist << 8) | c_dist;
+            // Score: primary = Manhattan grid distance, secondary = cycle distance
+            let g_dist = grid_dist(n_pos, self.apple_path);
+            let c_dist = cycle_dist(n_pos, self.apple_path);
 
-                if score < min_score {
-                    min_score = score;
-                    best_pos = n_pos;
-                }
+            let is_better = g_dist < min_g_dist || (g_dist == min_g_dist && c_dist < min_c_dist);
+
+            if is_better {
+                min_g_dist = g_dist;
+                min_c_dist = c_dist;
+                best_pos = n_pos;
             }
         }
 
         best_pos
     }
 
+    pub fn seed(&mut self, seed: u16) {
+        self.lfsr = if seed == 0 { 0xACE1 } else { seed };
+        self.place_apple();
+    }
+
     fn place_apple(&mut self) {
         self.lfsr = next_rand(self.lfsr);
-        let start_candidate = (self.lfsr % 64) as u8;
+        let start_candidate = (self.lfsr & 63) as u8;
         let mut candidate = start_candidate;
         for _ in 0..64u8 {
             if !self.is_pos_occupied(candidate) {
                 self.apple_path = candidate;
                 return;
             }
-            candidate = (candidate + 1) % 64;
+            candidate = (candidate + 1) & 63;
         }
         self.pause_ticks = PAUSE_TICKS;
     }
@@ -303,8 +336,8 @@ impl SnakeSim {
 
         self.tail_removing = !self.should_grow;
         if self.tail_removing {
-            let tail_idx = (self.head_idx + 64 - (self.len as usize - 1)) % 64;
-            let prev_tail_idx = (self.head_idx + 64 - (self.len as usize - 2)) % 64;
+            let tail_idx = (self.head_idx + 64 - (self.len as usize - 1)) & 63;
+            let prev_tail_idx = (self.head_idx + 64 - (self.len as usize - 2)) & 63;
             self.tail_path = self.segs[tail_idx];
             self.tail_dir = get_dir(self.segs[prev_tail_idx], self.segs[tail_idx]);
         }
@@ -326,7 +359,7 @@ impl SnakeSim {
 
         let next_pos = self.find_best_move();
 
-        self.head_idx = (self.head_idx + 1) % 64;
+        self.head_idx = (self.head_idx + 1) & 63;
         self.segs[self.head_idx] = next_pos;
 
         if self.should_grow {
@@ -358,7 +391,7 @@ impl SnakeSim {
 
         // 1. Paint body
         for i in (0..self.len as usize).rev() {
-            let idx = (self.head_idx + 64 - i) % 64;
+            let idx = (self.head_idx + 64 - i) & 63;
             let seg_pos = self.segs[idx];
             let (r, c) = pos_to_cell(seg_pos);
             let btn = cell_to_btn(r, c);

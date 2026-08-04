@@ -117,6 +117,7 @@ fn main() -> ! {
     }
 
     // DEBUG: Trigger a panic if Button 1 (2nd button, bit 1) is held down at startup
+    #[cfg(debug_assertions)]
     if (initial_buttons & 0b10) != 0 {
         panic!("DEBUG: Button 1 held on boot, requesting panic handler.");
     }
@@ -148,6 +149,8 @@ fn main() -> ! {
     let btn_state = unsafe { &mut *core::ptr::addr_of_mut!(BTN_STATE) };
     #[cfg(feature = "boot-anim")]
     let snake_sim = unsafe { &mut *core::ptr::addr_of_mut!(SNAKE_SIM) };
+    #[cfg(feature = "boot-anim")]
+    snake_sim.seed(mcu::get_wdt_jitter_entropy());
 
     // -------------------------------------------------------------------------
     // 3. Keyboard Mode Loop (if activated on boot)
@@ -157,7 +160,7 @@ fn main() -> ! {
         let mut prev_fn_pressed = false;
 
         // Render initial category background colors for all buttons (~10% brightness)
-        for btn in 0..64 {
+        for btn in 0..core::hint::black_box(64) {
             let color = keyboard::get_button_color(btn, false, false);
             host_leds[btn * 2] = color;
             host_leds[btn * 2 + 1] = color;

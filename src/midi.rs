@@ -77,7 +77,7 @@ fn note_from_u8(n: u8) -> Note {
 ///
 /// Call once per main-loop iteration, after `buttons_read_raw()`.
 pub fn process_buttons(raw: u64, state: &mut ButtonState) {
-    for btn in 0usize..64 {
+    for btn in 0..64usize {
         let pressed = (raw & (1u64 << btn)) != 0;
 
         if state.counter[btn] > 0 {
@@ -102,7 +102,7 @@ pub fn process_buttons(raw: u64, state: &mut ButtonState) {
             // Retry a few times if the TX endpoint is busy (e.g. simultaneous
             // button releases filling the FIFO). Silently dropping NoteOffs
             // causes LEDs to stay lit in the host DAW.
-            for _ in 0..4u8 {
+            for _ in 0..core::hint::black_box(4u8) {
                 let packet = UsbMidiEventPacket {
                     cable_number: CableNumber::Cable0,
                     message: if pressed {
