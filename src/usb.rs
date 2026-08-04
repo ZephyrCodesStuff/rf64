@@ -41,6 +41,7 @@ fn init_dev(alloc_ref: &'static UsbBusAllocator<TargetUsbBus>) {
         .device_sub_class(0x00)
         .device_protocol(0x00)
         .max_power(480)
+        .max_packet_size_0(64)
         .build();
 
     unsafe {
