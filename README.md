@@ -13,12 +13,11 @@
 
 </div>
 
----
+RF64 is a custom-made bare-metal firmware for the [MIDI Fighter 64](https://www.midifighter.com/#64) music controller. It aims to improve stability, hardware safety, performance and overall user-experience by adding commonly used features (such as full Apollo Studio support, and eventually custom color palettes).
 
-> [!WARNING]
-> This project is experimental. While it will not brick your MF64, **please don't try flashing it if you're not sure of what you're doing** or don't have the equipment necessary to recover a bricked MCU.
->
-> If you still do so, friendly reminder that **you are taking full responsibility**. _DJTT's official firmware works great, too!_
+To get started, you can grab the latest `.hex` file [here](https://github.com/ZephyrCodesStuff/rf64/releases/latest) and flash it with the official [DJTT MIDI Fighter Utility](https://store.djtechtools.com/pages/midi-fighter-utility?srsltid=AfmBOooWb8U9hd1prQLOXn1krJT9SqvNwH6x92Y0u-ud7NgwnYadfZdn) app!
+
+---
 
 ## 🌟 Authors
 
@@ -80,11 +79,20 @@ cargo build --release --features keyboard
 
 ## 💉 Flashing
 
-There's actually two ways, depending on whether you want to use the built-in bootloader or not.
+> [!NOTE]
+> **Before you flash this, please be aware:**
+> 
+> This project is *community-made firmware*. While it will not brick your MF64, **don't try flashing it if you're not sure of what you're doing**. As this is open-source software licensed AGPL-3.0, friendly reminder that **you are taking full responsibility**. _DJTT's official firmware works great, too!_
+>
+> Additionally, this firmware does not have the capability to permanently destroy your device; in the worst possible case that the flashing process goes wrong and you're left with just the bootloader, a technician can always recover the MCU via **ICSP (In-Circuit Serial Programming)**.
+>
+> **This fragility is a fundamental limitation of DJTT's LUFA bootloader**, and would require a custom bootloader (plus ICSP to rewrite it), in order to fix.
+
+There's actually two ways to flash the firmware, depending on whether you want to use the built-in bootloader or not.
 
 ### 🧵 Using the ICSP 6-pin header on the PCB
 
-Connect the wires as follows:
+Connect the wires as follows (*you can pick your favorite colors, these are just what I like*):
 
 | Pin | Function | Color  |
 | --- | -------- | ------ |
@@ -105,7 +113,10 @@ avrdude -c buspirate -p atmega32u4 -U flash:w:bin/BootloaderDFU_mf64.hex
 avrdude -c buspirate -p atmega32u4 -D -U flash:w:target/rf64.bin
 ```
 
-Replace `buspirate` with your programmer. During development, the [Bus Pirate](https://web.archive.org/web/20260419123742/http://dangerousprototypes.com/docs/Bus_Pirate) is what I used.
+> [!NOTE]
+> Replace `buspirate` with your programmer.
+>
+> During development, the [Bus Pirate](https://web.archive.org/web/20260419123742/http://dangerousprototypes.com/docs/Bus_Pirate) is what _I_ used.
 
 You may also use an Arduino, a Raspberry Pi (make sure to step-down the 5V GPIO to 3.3V or the Raspberry might suffer!), or any other programmer that supports the AVR family. DJTechTools used an `usbtiny` programmer.
 
@@ -128,10 +139,17 @@ To flash a new firmware, you'll first have to start the MF64 in **DFU bootloader
 
 If everything went correctly, in your devices you should now see something like "Midi Fighter DFU Bootloader".
 
-Now that your MF64 is in "DFU bootloader" mode, simply run:
+### 🎹 Using the official "MIDI Fighter Utility" app
+
+Open the app, go to the top and select **Tools -> Load custom firmware -> for a 64** and pick the `.hex` file you downloaded from [here](https://github.com/ZephyrCodesStuff/rf64/releases/latest).
+
+### 💻 Using the [dfu-programmer](https://dfu-programmer.github.io) terminal utility
+
+Download a prebuilt binary for the [dfu-programmer](https://dfu-programmer.github.io) utility, and then run:
 
 ```bash
 # ! DO NOT UNPLUG THE DEVICE IN-BETWEEN THESE !
+# Replace `target/rf64.hex` with the path to your downloaded `.hex` file
 dfu-programmer atmega32u4 erase
 dfu-programmer atmega32u4 flash target/rf64.hex
 
