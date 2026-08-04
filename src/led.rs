@@ -66,7 +66,7 @@ impl Color {
     /// If an original color channel was > 0, we ensure it never rounds down to 0,
     /// so that very dim colors aren't entirely extinguished by scaling.
     #[inline(never)]
-    pub fn scale_brightness(self, scale: u16) -> Self {
+    pub const fn scale_brightness(self, scale: u16) -> Self {
         if scale >= 256 {
             return self;
         }
@@ -82,7 +82,7 @@ impl Color {
     }
 }
 
-pub fn compute_power_scale(total_sum: u32) -> u16 {
+pub const fn compute_power_scale(total_sum: u32) -> u16 {
     if total_sum > SAFE_MAX_COLOR_SUM {
         49600u16 / (total_sum >> 5) as u16
     } else {
@@ -406,6 +406,10 @@ impl LedDriver {
                 (0u8, 0u8, 0u8)
             };
 
+            #[allow(
+                clippy::tuple_array_conversions,
+                reason = "unfolding leads to uglier code"
+            )]
             for val in [g, r, b] {
                 for bit in (0..8u8).rev() {
                     par_buf.masks[idx] = if (val & (1 << bit)) != 0 { 0x70 } else { 0x00 };

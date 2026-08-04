@@ -256,8 +256,9 @@ impl SnakeSim {
         let mut min_g_dist = u8::MAX;
         let mut min_c_dist = u8::MAX;
 
-        for i in 0..n_count {
-            let n_pos = neighbors[i];
+        for n_pos in neighbors.iter().take(n_count) {
+            let n_pos = *n_pos;
+
             if self.is_pos_occupied(n_pos) {
                 continue;
             }
