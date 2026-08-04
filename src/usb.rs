@@ -16,8 +16,10 @@ pub static mut BUS_ALLOC_STORAGE: MaybeUninit<UsbBusAllocator<TargetUsbBus>> =
 pub static mut USB_DEV_STORAGE: MaybeUninit<UsbDevice<'static, TargetUsbBus>> =
     MaybeUninit::uninit();
 pub static mut MIDI_STORAGE: MaybeUninit<MidiClass<'static, TargetUsbBus>> = MaybeUninit::uninit();
+#[cfg(feature = "keyboard")]
 pub static mut KEYBOARD_STORAGE: MaybeUninit<KeyboardClass<'static, TargetUsbBus>> =
     MaybeUninit::uninit();
+#[cfg(feature = "keyboard")]
 pub static mut IS_KEYBOARD_MODE: bool = false;
 
 #[inline(never)]
@@ -82,6 +84,7 @@ fn init_midi(alloc_ref: &'static UsbBusAllocator<TargetUsbBus>) {
 
 /// Initialize the USB bus and Keyboard stack into module-level static storage.
 /// Call once from `main()` when booting into Keyboard emulation mode.
+#[cfg(feature = "keyboard")]
 #[inline(never)]
 pub fn init_keyboard_global(usb: atmega_hal::pac::USB_DEVICE) {
     unsafe {
@@ -104,6 +107,7 @@ pub fn init_keyboard_global(usb: atmega_hal::pac::USB_DEVICE) {
     reset_usb_bus();
 }
 
+#[cfg(feature = "keyboard")]
 #[inline(never)]
 fn init_keyboard(alloc_ref: &'static UsbBusAllocator<TargetUsbBus>) {
     unsafe {
@@ -320,6 +324,7 @@ impl<B: UsbBus> UsbClass<B> for MidiClass<'_, B> {
 }
 
 /// Standard 63-byte USB HID Boot Keyboard Report Descriptor
+#[cfg(feature = "keyboard")]
 pub const KEYBOARD_REPORT_DESCRIPTOR: &[u8] = &[
     0x05, 0x01, // USAGE_PAGE (Generic Desktop)
     0x09, 0x06, // USAGE (Keyboard)
@@ -356,11 +361,13 @@ pub const KEYBOARD_REPORT_DESCRIPTOR: &[u8] = &[
 ];
 
 /// USB HID Keyboard Class
+#[cfg(feature = "keyboard")]
 pub struct KeyboardClass<'a, B: UsbBus> {
     interface: InterfaceNumber,
     endpoint_in: EndpointIn<'a, B>,
 }
 
+#[cfg(feature = "keyboard")]
 impl<'a, B: UsbBus> KeyboardClass<'a, B> {
     pub fn new(alloc: &'a UsbBusAllocator<B>) -> Self {
         KeyboardClass {
@@ -374,6 +381,7 @@ impl<'a, B: UsbBus> KeyboardClass<'a, B> {
     }
 }
 
+#[cfg(feature = "keyboard")]
 impl<B: UsbBus> UsbClass<B> for KeyboardClass<'_, B> {
     fn get_configuration_descriptors(
         &self,
@@ -429,13 +437,15 @@ impl<B: UsbBus> UsbClass<B> for KeyboardClass<'_, B> {
 
 pub fn poll() -> bool {
     let usb_dev = unsafe { (*core::ptr::addr_of_mut!(USB_DEV_STORAGE)).assume_init_mut() };
+    
+    #[cfg(feature = "keyboard")]
     if unsafe { IS_KEYBOARD_MODE } {
         let keyboard = unsafe { (*core::ptr::addr_of_mut!(KEYBOARD_STORAGE)).assume_init_mut() };
-        usb_dev.poll(&mut [keyboard])
-    } else {
-        let midi = unsafe { (*core::ptr::addr_of_mut!(MIDI_STORAGE)).assume_init_mut() };
-        usb_dev.poll(&mut [midi])
+        return usb_dev.poll(&mut [keyboard]);
     }
+    
+    let midi = unsafe { (*core::ptr::addr_of_mut!(MIDI_STORAGE)).assume_init_mut() };
+    usb_dev.poll(&mut [midi])
 }
 
 pub fn read_packet() -> Option<[u8; 4]> {
@@ -453,6 +463,7 @@ pub fn send_raw_packet(bytes: [u8; 4]) -> usb_device::Result<usize> {
     midi.send_raw_packet(bytes)
 }
 
+#[cfg(feature = "keyboard")]
 pub fn send_keyboard_report(report: &[u8; 8]) -> usb_device::Result<usize> {
     let keyboard = unsafe { (*core::ptr::addr_of_mut!(KEYBOARD_STORAGE)).assume_init_mut() };
     keyboard.send_report(report)

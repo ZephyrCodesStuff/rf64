@@ -18,22 +18,22 @@
 > [!WARNING]
 > This project is experimental. While it will not brick your MF64, **please don't try flashing it if you're not sure of what you're doing** or don't have the equipment necessary to recover a bricked MCU.
 >
-> If you still do so, friendly reminder that **you are taking full responsibility**. *DJTT's official firmware works great, too!*
+> If you still do so, friendly reminder that **you are taking full responsibility**. _DJTT's official firmware works great, too!_
 
 ## 🌟 Authors
 
 - [@zeph](https://github.com/ZephyrCodesStuff) (that's me!)
 
-## 🌠 Motivation
+## 🌠 Features
 
-The C firmware is already incredibly well-written and feature-complete. However, there are a couple places where Rust can shine:
-
-- **Safety**: Rust's type system and borrow checker can help prevent many common bugs that are easy to make in C, especially in embedded systems.
-- **Concurrency**: Rust's ownership model makes it easier to write concurrent code without fear of data races, which can be a challenge in C.
-- **Speed**: Rust's zero-cost abstractions can lead to faster code than C in some cases, especially when it comes to high-level abstractions.
-
-> [!WARNING]
-> You will quickly learn that **Rust's speed can (and will) be a double-edged sword**. Sometimes, LLVM may optimize things so well that the underlying hardware will literally not have enough time to keep up with the code.
+- **Performance**: Clever tricks such as parallel LED strand driving, optimized loop cycles, and zero-cost abstractions for minimal latency during the most intense lightshows.
+- **Boot Animation**: An interactive Snake game animation that appears at boot, or after 256 seconds of idling. It stops immediately as soon as a MIDI message is received or a button is pressed, ensuring it never gets in your way.
+- **Keyboard Emulation**: Ultra-low latency HID boot keyboard mode (ideal for rhythm games like _Osu!_, _Geometry Dash_ or just general use).
+- **Full [Apollo Studio](https://github.com/mat1jaczyyy/apollo-studio) Support**: Complete FastRGB and SysEx MIDI protocol support for Apollo Studio lightshows.
+- **Overcurrent Protection**: Built-in dynamic power scaling logic to ensure the controller never draws more than 480 mA. _Not even the official firmware has this!_ It prevents mid-show USB port brownouts, device restarts, or thermal stress on components.
+- **Full Bootloader Compatibility**: Easily flash back to Official Firmware (OFW) at any time using the official MIDI Fighter Utility (MFU) app.
+  > [!NOTE]
+  > To use MFU, you **must** manually boot into DFU bootloader mode (hold bottom-left button on startup). The MFU app will intentionally not detect the device in normal operating mode to prevent it from issuing unsupported OFW commands (such as saving custom color profiles).
 
 ## 🎛️ Hardware
 
@@ -48,7 +48,34 @@ The MIDI Fighter 64 is a boutique MIDI controller with the following specificati
 ## 🧰 Building
 
 ```bash
-cargo build --release --target avr-none
+cargo build --release
+```
+
+### 🚩 Feature Flags & Flash Budget
+
+This firmware uses Cargo feature flags to manage flash usage on the ATmega32U4:
+
+| Feature Flag | Description                                    | Default      |
+| ------------ | ---------------------------------------------- | ------------ |
+| `boot-anim`  | Snake game boot animation & idle screen saver  | **Enabled**  |
+| `apollo`     | Apollo Studio FastRGB & SysEx protocol support | **Enabled**  |
+| `keyboard`   | USB HID Boot Keyboard emulation mode           | **Disabled** |
+
+#### Why `keyboard` is disabled by default:
+
+The ATmega32U4 has **28 KB** of usable flash memory reserved for application code (4 KB is reserved for the DFU bootloader).
+
+When compiled with `opt-level = 3` (maximum speed), enabling all three features (`boot-anim`, `apollo`, and `keyboard`) pushes the total flash consumption from ~27 KB up to **~32 KB**, which exceeds the 28 KB limit, meaning we would have to sacrifice the bootloader which is _not a good idea_.
+
+While changing `opt-level = "z"` (size optimization) allows all features to fit into flash, it noticeably degrades high-speed LED lightshow rendering performance. `opt-level = 1` results in oversized binaries, and `opt-level = 2` produces results similar to level 3.
+
+Therefore, you have two build choices depending on your priority:
+
+- 🚀 **Performance (Recommended)**: Keep `opt-level = 3` and use default features (`boot-anim` + `apollo`, no `keyboard`).
+- 🎹 **Features**: Set `opt-level = "z"` in `Cargo.toml` and build with `--features keyboard` if keyboard emulation is required:
+
+```bash
+cargo build --release --features keyboard
 ```
 
 ## 💉 Flashing
@@ -59,14 +86,14 @@ There's actually two ways, depending on whether you want to use the built-in boo
 
 Connect the wires as follows:
 
-| Pin | Function | Color |
-| --- | ----- | -------- |
-| 1   | MISO | Blue |
-| 2   | VCC  | Red |
-| 3   | SCK  | White |
-| 4   | MOSI | Green |
-| 5   | CS/RST | Yellow |
-| 6   | GND  | Black |
+| Pin | Function | Color  |
+| --- | -------- | ------ |
+| 1   | MISO     | Blue   |
+| 2   | VCC      | Red    |
+| 3   | SCK      | White  |
+| 4   | MOSI     | Green  |
+| 5   | CS/RST   | Yellow |
+| 6   | GND      | Black  |
 
 Then run the following command:
 
@@ -87,9 +114,11 @@ You may also use an Arduino, a Raspberry Pi (make sure to step-down the 5V GPIO 
 With the built-in DFU bootloader, things get 10x easier.
 
 > [!CAUTION]
-> There is a catch: it is *very* easy to soft-brick your controller if you disconnect the USB cable between the `erase` and `flash` commands.
-> 
+> There is a catch: it is _very_ easy to soft-brick your controller if you disconnect the USB cable between the `erase` and `flash` commands.
+>
 > This is because the bootloader only starts if a specific value is written in RAM. Powering off the device without a valid firmware will reset the device, thus the magic value will get wiped and the bootloader will never start again. You will then need to use the ICSP header to re-flash the device completely.
+>
+> **Always finish flashing before removing the USB cable or using `start` to reboot the device.**
 
 To flash a new firmware, you'll first have to start the MF64 in **DFU bootloader mode**.
 
@@ -125,6 +154,7 @@ And lastly, our beloved [Gemini](https://gemini.google.com) and [Claude](https:/
 This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
 
 **What this means:**
+
 - ✅ **You can** use this firmware to build other open source things.
 - ✅ **You can** modify the firmware to suit your needs.
 - 🛑 **You cannot** use this code for network services (although I really doubt you're going to do much with a firmware)

@@ -9,6 +9,12 @@ repository = "https://github.com/ZephyrCodesStuff/rf64"
 keywords = ["embedded", "avr", "midi", "usb", "atmega32u4"]
 categories = ["embedded", "usb", "midi"]
 
+[features]
+default = ["boot-anim", "apollo"]
+boot-anim = []
+keyboard = []
+apollo = []
+
 [dependencies]
 
 # Atmel AVR abstractions

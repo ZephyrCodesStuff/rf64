@@ -51,6 +51,7 @@ impl Color {
     pub const RED: Self = Self { r: 255, g: 0, b: 0 };
 
     /// Used for USB Keyboard mode indicator.
+    #[cfg(feature = "keyboard")]
     pub const WHITE: Self = Self {
         r: 255,
         g: 255,

@@ -1,9 +1,6 @@
 [build]
 target = "avr-none"
-rustflags = [
-    "-C", "target-cpu=atmega32u4",
-    "-C", "no-vectorize-loops",
-]
+rustflags = ["-C", "target-cpu=atmega32u4", "-C", "no-vectorize-loops"]
 
 [unstable]
 build-std = ["core"]
@@ -17,7 +14,7 @@ opt-level = "z"
 panic = "abort"
 codegen-units = 1
 lto = "fat"
-opt-level = "z"
+opt-level = 3
 
 [target.avr-none]
 rustflags = [

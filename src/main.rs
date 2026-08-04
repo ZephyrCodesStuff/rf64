@@ -2,17 +2,21 @@
 #![no_main]
 #![feature(asm_experimental_arch)]
 
+#[cfg(feature = "boot-anim")]
 mod boot_anim;
 mod bootloader;
 mod delay;
+#[cfg(feature = "apollo")]
 mod fastled;
 mod gpio;
+#[cfg(feature = "keyboard")]
 mod keyboard;
 mod keys;
 mod led;
 mod mcu;
 mod midi;
 mod palette;
+#[cfg(feature = "apollo")]
 mod sysex;
 mod usb;
 
@@ -60,9 +64,11 @@ static mut PAR_BUF: led::ParallelBitBuffer = led::ParallelBitBuffer::new();
 static mut HOST_LEDS: [led::Color; led::TOTAL_LEDS] = [led::Color::BLACK; led::TOTAL_LEDS];
 
 /// SysEx Parser State Machine & Buffer. In BSS to prevent stack overflow.
+#[cfg(feature = "apollo")]
 static mut SYSEX_PARSER: sysex::SysExParser = sysex::SysExParser::new();
 
 /// Snake boot animation state. In BSS (~80 bytes) to keep it off main()'s stack frame.
+#[cfg(feature = "boot-anim")]
 static mut SNAKE_SIM: boot_anim::SnakeSim = boot_anim::SnakeSim::new();
 
 /// Debounced button state. In BSS (~128 bytes) to keep it off main()'s stack frame.
@@ -115,10 +121,13 @@ fn main() -> ! {
     }
 
     // 3rd button held on boot (bit 2) -> USB HID Keyboard Emulation Mode
+    #[cfg(feature = "keyboard")]
     let is_keyboard_mode = (initial_keys & 0b100) != 0;
 
     // Initialize 48MHz USB PLL and corresponding USB stack
     usb::init_usb_pll();
+
+    #[cfg(feature = "keyboard")]
     if is_keyboard_mode {
         usb::init_keyboard_global(dp.USB_DEVICE);
 
@@ -130,14 +139,19 @@ fn main() -> ! {
         usb::init_global(dp.USB_DEVICE);
     }
 
+    #[cfg(not(feature = "keyboard"))]
+    usb::init_global(dp.USB_DEVICE);
+
     // SAFETY: single-threaded; all statics are only accessed from this function.
     let host_leds = unsafe { &mut *core::ptr::addr_of_mut!(HOST_LEDS) };
     let btn_state = unsafe { &mut *core::ptr::addr_of_mut!(BTN_STATE) };
+    #[cfg(feature = "boot-anim")]
     let snake_sim = unsafe { &mut *core::ptr::addr_of_mut!(SNAKE_SIM) };
 
     // -------------------------------------------------------------------------
     // 3. Keyboard Mode Loop (if activated on boot)
     // -------------------------------------------------------------------------
+    #[cfg(feature = "keyboard")]
     if is_keyboard_mode {
         let mut prev_fn_pressed = false;
 
@@ -191,8 +205,14 @@ fn main() -> ! {
     led_driver.render_frame(par_buf, host_leds);
 
     // Boot animation: snake game :)
+    #[cfg(feature = "boot-anim")]
     let mut animating = true;
+    #[cfg(not(feature = "boot-anim"))]
+    let mut animating = false;
+
+    #[cfg(feature = "boot-anim")]
     let mut life_timer: u8 = 0;
+
     let mut seconds_idle: u16 = 0;
 
     // -------------------------------------------------------------------------
@@ -209,17 +229,24 @@ fn main() -> ! {
             seconds_idle += 1;
 
             if seconds_idle >= 256 && !animating {
-                animating = true;
-                snake_sim.reset();
-                dirty = true;
+                #[cfg(feature = "boot-anim")]
+                {
+                    animating = true;
+                    snake_sim.reset();
+                    dirty = true;
+                }
                 seconds_idle = 0;
             }
         }
 
         // A. Poll & drain incoming USB MIDI packets from DAW
-        let sysex_parser = unsafe { &mut *core::ptr::addr_of_mut!(SYSEX_PARSER) };
+        #[cfg(feature = "apollo")]
+        let sysex_parser_opt = Some(unsafe { &mut *core::ptr::addr_of_mut!(SYSEX_PARSER) });
+        #[cfg(not(feature = "apollo"))]
+        let sysex_parser_opt: Option<&mut ()> = None;
+
         let (midi_dirty, midi_active) =
-            midi_rx.drain_incoming_frame(host_leds, &mut animating, sysex_parser);
+            midi_rx.drain_incoming_frame(host_leds, &mut animating, sysex_parser_opt);
         if midi_dirty {
             dirty = true;
         }
@@ -246,6 +273,7 @@ fn main() -> ! {
         // Two rendered frames per snake step for sub-cell LED smoothing:
         //   tick 16 → half_step(): preview entry/exit LEDs of the upcoming move
         //   tick 32 → step():      commit the move; both LEDs of new head lit
+        #[cfg(feature = "boot-anim")]
         if animating {
             life_timer += 1;
             if life_timer == 16 {

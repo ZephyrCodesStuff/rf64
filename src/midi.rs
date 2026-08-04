@@ -150,7 +150,8 @@ impl MidiRx {
         &self,
         host_leds: &mut [crate::led::Color; crate::led::TOTAL_LEDS],
         animating: &mut bool,
-        sysex_parser: &mut crate::sysex::SysExParser,
+        #[cfg(feature = "apollo")] mut sysex_parser_opt: Option<&mut crate::sysex::SysExParser>,
+        #[cfg(not(feature = "apollo"))] _sysex_parser_opt: Option<&mut ()>,
     ) -> (bool, bool) {
         let mut idle_cycles = 0;
         let mut received_on = 0u64;
@@ -174,14 +175,19 @@ impl MidiRx {
 
                 // SysEx processing
                 if (0x4..=0x7).contains(&cin) {
-                    // For CIN 5, 6, 7 (ends), process and trigger redraw if needed
-                    let modified = sysex_parser.process_packet(&packet, host_leds);
-                    if modified {
-                        activity = true;
-                        dirty = true;
-                        if *animating {
-                            *animating = false; // Stop animation if host sends data
-                            host_leds.fill(crate::led::Color::BLACK);
+                    #[cfg(feature = "apollo")]
+                    {
+                        if let Some(sysex_parser) = sysex_parser_opt.as_deref_mut() {
+                            // For CIN 5, 6, 7 (ends), process and trigger redraw if needed
+                            let modified = sysex_parser.process_packet(&packet, host_leds);
+                            if modified {
+                                activity = true;
+                                dirty = true;
+                                if *animating {
+                                    *animating = false; // Stop animation if host sends data
+                                    host_leds.fill(crate::led::Color::BLACK);
+                                }
+                            }
                         }
                     }
                     continue; // Skip the standard Note/CC processing for SysEx
