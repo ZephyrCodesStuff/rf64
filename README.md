@@ -31,8 +31,6 @@ To get started, you can grab the latest `.hex` file [here](https://github.com/Ze
 - **Full [Apollo Studio](https://github.com/mat1jaczyyy/apollo-studio) Support**: Complete FastRGB and SysEx MIDI protocol support for Apollo Studio lightshows.
 - **Overcurrent Protection**: Built-in dynamic power scaling logic to ensure the controller never draws more than 480 mA. _Not even the official firmware has this!_ It prevents mid-show USB port brownouts, device restarts, or thermal stress on components.
 - **Full Bootloader Compatibility**: Easily flash back to Official Firmware (OFW) at any time using the official MIDI Fighter Utility (MFU) app.
-  > [!NOTE]
-  > To use MFU, you **must** manually boot into DFU bootloader mode (hold bottom-left button on startup). The MFU app will intentionally not detect the device in normal operating mode to prevent it from issuing unsupported OFW commands (such as saving custom color profiles).
 
 ## 🎛️ Hardware
 
@@ -156,6 +154,17 @@ dfu-programmer atmega32u4 flash target/rf64.hex
 # ONLY AFTER FLASHING, optionally, to reboot the device:
 dfu-programmer atmega32u4 start
 ```
+
+### 🔁 Rolling back to OFW
+
+To rollback using the MIDI Fighter Utility, you **must** manually boot into DFU bootloader mode (hold bottom-left button on startup). The MFU app will intentionally not detect the device in normal operating mode to prevent it from issuing unsupported OFW commands (such as saving custom color profiles).
+
+You will then see an **orange checkerboard pattern** on your device. This indicates you successfully entered bootloader mode. Simply open the MFU app now, select **64** from the list of devices (this is REALLY important) and wait patiently.
+
+> [!CAUTION]
+> **Do not disconnect the device until you see the DJTT boot animation.**
+>
+> Follow standard safety guidelines when flashing low-level firmware (don't use a janky cable, don't use a USB hub, close all apps that may interfere...)
 
 ## 💛 Acknowledgements
 
