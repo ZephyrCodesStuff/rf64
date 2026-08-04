@@ -15,7 +15,7 @@
 
 RF64 is a custom-made bare-metal firmware for the [MIDI Fighter 64](https://www.midifighter.com/#64) music controller. It aims to improve stability, hardware safety, performance and overall user-experience by adding commonly used features (such as full Apollo Studio support, and eventually custom color palettes).
 
-To get started, you can grab the latest `.hex` file [here](https://github.com/ZephyrCodesStuff/rf64/releases/latest) and flash it with the official [DJTT MIDI Fighter Utility](https://store.djtechtools.com/pages/midi-fighter-utility?srsltid=AfmBOooWb8U9hd1prQLOXn1krJT9SqvNwH6x92Y0u-ud7NgwnYadfZdn) app!
+To get started, you can grab the latest `.hex` file [here](https://github.com/ZephyrCodesStuff/rf64/releases/latest) and flash it with the official [DJTT MIDI Fighter Utility](https://store.djtechtools.com/pages/midi-fighter-utility) app!
 
 ---
 
