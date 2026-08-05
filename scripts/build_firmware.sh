@@ -3,9 +3,9 @@ set -e
 
 # Check if --release flag is passed
 if [ "$1" = "--release" ]; then
-    cargo build --release --target avr-none
+    cargo build --release --target avr-none "${@:2}"
 else
-    cargo build --target avr-none
+    cargo build --target avr-none "${@:2}"
 fi
 
 # Check if the build was successful
