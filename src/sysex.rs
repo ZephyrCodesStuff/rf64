@@ -270,7 +270,7 @@ impl SysExParser {
             }
             #[cfg(feature = "mystrix")]
             State::Mystrix(MystrixState::Data) => {
-                for chunk in payload.chunks_exact(4) {
+                for chunk in payload.as_chunks::<4>().0 {
                     let idx = chunk[0] as usize;
                     let r6 = (chunk[1] & 0x3F) as u16;
                     let g6 = (chunk[2] & 0x3F) as u16;
@@ -281,10 +281,10 @@ impl SysExParser {
                     let b = ((b6 * 255 + 31) / 63) as u8;
 
                     // Mystrix XY index (11..88) → MF64 physical button (0..63)
-                    let btn_opt = if idx >= 11 && idx <= 88 {
+                    let btn_opt = if (11..=88).contains(&idx) {
                         let x = (idx % 10) as u8;
                         let y = (idx / 10) as u8;
-                        if x >= 1 && x <= 8 && y >= 1 && y <= 8 {
+                        if (1..=8).contains(&x) && (1..=8).contains(&y) {
                             let col = x - 1;
                             let row = y - 1;
                             let half_offset = if col >= 4 { 32 } else { 0 };
@@ -303,13 +303,13 @@ impl SysExParser {
                         None
                     };
 
-                    if let Some(btn) = btn_opt {
-                        if btn < 64 {
-                            let color = Color::new(r, g, b);
-                            host_leds[btn * 2] = color;
-                            host_leds[btn * 2 + 1] = color;
-                            *modified = true;
-                        }
+                    if let Some(btn) = btn_opt
+                        && btn < 64
+                    {
+                        let color = Color::new(r, g, b);
+                        host_leds[btn * 2] = color;
+                        host_leds[btn * 2 + 1] = color;
+                        *modified = true;
                     }
                 }
             }
