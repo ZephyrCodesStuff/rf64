@@ -10,7 +10,7 @@ keywords = ["embedded", "avr", "midi", "usb", "atmega32u4"]
 categories = ["embedded", "usb", "midi"]
 
 [features]
-default = ["boot-anim", "apollo", "mystrix"]
+default = ["boot-anim", "apollo"]
 boot-anim = []
 keyboard = []
 apollo = []

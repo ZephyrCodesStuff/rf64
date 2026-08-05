@@ -22,6 +22,15 @@ pub static mut KEYBOARD_STORAGE: MaybeUninit<KeyboardClass<'static, TargetUsbBus
 #[cfg(feature = "keyboard")]
 pub static mut IS_KEYBOARD_MODE: bool = false;
 
+static USB_META_MANUFACTURER: &str = "https://github.com/ZephyrCodesStuff/rf64";
+#[cfg(not(feature = "mystrix"))]
+static USB_META_PRODUCT: &str = "MIDI Fighter 67";
+static USB_META_SERIAL: &str = "0xDEADBEEF";
+
+/// Get it? Because the MIDI Fighter 64 is like as big as 5 of these combined?
+#[cfg(feature = "mystrix")]
+static USB_META_PRODUCT: &str = "Mystrix Pro Max";
+
 fn reset_usb_bus() {
     unsafe {
         core::ptr::write_volatile(0xE0 as *mut u8, 1);
@@ -34,9 +43,9 @@ fn reset_usb_bus() {
 
 fn init_dev(alloc_ref: &'static UsbBusAllocator<TargetUsbBus>) {
     let dev = UsbDeviceBuilder::new(alloc_ref, UsbVidPid(VID, PID))
-        .manufacturer("https://github.com/ZephyrCodesStuff/rf64")
-        .product("Rusty Fighter 64")
-        .serial_number(r"0xDEADBEEF")
+        .manufacturer(USB_META_MANUFACTURER)
+        .product(USB_META_PRODUCT)
+        .serial_number(USB_META_SERIAL)
         .device_class(0x00)
         .device_sub_class(0x00)
         .device_protocol(0x00)
