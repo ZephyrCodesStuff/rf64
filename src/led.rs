@@ -210,17 +210,18 @@ const PORTC_IO: u8 = 0x08;
 ///
 /// ```text
 /// sbi  PORT, PIN       ; 2 cy → pin goes HIGH
+/// nop × 2              ; 2 cy: T0H padding
 /// sbrs byte, N         ; 2 cy (skip, bit=1) | 1 cy (fall-through, bit=0)
 /// cbi  PORT, PIN       ; [bit=0: 2 cy → pin goes LOW early] | [bit=1: SKIPPED]
-/// nop × 4              ; 4 cy padding
+/// nop × 4              ; 4 cy: T1H padding
 /// cbi  PORT, PIN       ; [bit=1: 2 cy → pin goes LOW] | [bit=0: 2 cy, harmless re-assert]
-/// nop × 10             ; 10 cy LOW hold
+/// nop × 7              ; 7 cy: LOW hold
 /// ```
 ///
-/// | Signal | Cycles | Time    | Previous |
-/// |--------|--------|---------|----------|
-/// | T1H    | 8 cy   | 500 ns  | 500 ns   | (unchanged)
-/// | T0H    | 3 cy   | 187 ns  | 125 ns   | (slightly improved)
+/// | Signal | Cycles | Time    | Spec Range     |
+/// |--------|--------|---------|----------------|
+/// | T1H    | 11 cy  | 687 ns  | 650 – 800 ns   |
+/// | T0H    | 5 cy   | 312 ns  | 250 – 400 ns   |
 #[inline(always)]
 unsafe fn send_byte_pin<const PORT: u8, const PIN: u8>(byte: u8) {
     // Emit one bit using the SBRS skip trick.
@@ -228,19 +229,20 @@ unsafe fn send_byte_pin<const PORT: u8, const PIN: u8>(byte: u8) {
     // `sbrs b, N` skips the immediately following instruction when bit N of
     // register `b` is set. For bit=1 it skips the early `cbi`, letting the
     // pin stay HIGH through 4 NOPs before the unconditional `cbi` pulls it
-    // LOW (T1H = 8 cycles). For bit=0 it falls through to the early `cbi`
-    // immediately (T0H = 3 cycles).
+    // LOW (T1H ≈ 11 cycles = 687.5 ns). For bit=0 it falls through to the
+    // early `cbi` (T0H ≈ 5 cycles = 312.5 ns).
     macro_rules! send_bit {
         ($bit:literal) => {
             unsafe {
                 asm!(
                     "sbi {port}, {pin}",          // pin HIGH
-                    "sbrs {b}, {bit}",             // skip early cbi if bit=1
-                    "cbi {port}, {pin}",           // [bit=0] pin LOW  (T0H ≈ 3 cy)
-                    "nop", "nop", "nop", "nop",    // timing pad
-                    "cbi {port}, {pin}",           // [bit=1] pin LOW  (T1H ≈ 8 cy)
-                    "nop", "nop", "nop", "nop", "nop",
-                    "nop", "nop", "nop", "nop", "nop", // LOW hold (10 cy)
+                    "nop", "nop",                 // T0H pad
+                    "sbrs {b}, {bit}",            // skip early cbi if bit=1
+                    "cbi {port}, {pin}",          // [bit=0] pin LOW  (T0H ≈ 5 cy = 312.5 ns)
+                    "nop", "nop", "nop", "nop",   // T1H pad
+                    "cbi {port}, {pin}",          // [bit=1] pin LOW  (T1H ≈ 11 cy = 687.5 ns)
+                    "nop", "nop", "nop", "nop",
+                    "nop", "nop", "nop",          // LOW hold (7 cy)
                     port = const PORT,
                     pin  = const PIN,
                     b    = in(reg) byte,
