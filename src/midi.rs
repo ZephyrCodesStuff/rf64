@@ -33,6 +33,9 @@ const MIDI_VELOCITY: u8 = 127;
 /// Since each main loop cycle with LED updates takes ~5ms, 2 cycles = ~10ms debounce.
 const DEBOUNCE_CYCLES: u8 = 2;
 
+/// How many idle cycles to wait before considering the incoming MIDI stream stable (~300us).
+const IDLE_CYCLES_STABLE: u8 = 5;
+
 // ── Debounce state ────────────────────────────────────────────────────────────
 
 /// Per-button debounce state machine.
@@ -262,7 +265,7 @@ impl MidiRx {
                 idle_cycles = 0; // reset idle counter if we got data
             } else {
                 idle_cycles += 1;
-                if idle_cycles > 30 {
+                if idle_cycles > IDLE_CYCLES_STABLE {
                     break; // ~300us of idle time, stream is stable
                 }
                 crate::delay::delay_us(10);

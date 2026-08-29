@@ -66,7 +66,7 @@ impl Color {
     /// Dynamically scale brightness by a fraction (scale / 256).
     /// If an original color channel was > 0, we ensure it never rounds down to 0,
     /// so that very dim colors aren't entirely extinguished by scaling.
-    #[inline(never)]
+    #[inline(always)]
     pub const fn scale_brightness(self, scale: u16) -> Self {
         if scale >= 256 {
             return self;
