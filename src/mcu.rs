@@ -34,8 +34,8 @@ pub fn init_hardware_safeguards() {
     disable_jtag();
 }
 
-/// Harvest 16 bits of genuine hardware entropy by measuring phase jitter between
-/// the 16 MHz main crystal clock and the independent internal 128 kHz WDT RC oscillator.
+/// Obtains true hardware entropy from Watchdog Timer (WDT) oscillator jitter.
+#[cfg(feature = "boot-anim")]
 pub fn get_wdt_jitter_entropy() -> u16 {
     let mut seed: u16 = 0;
 

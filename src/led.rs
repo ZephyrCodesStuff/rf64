@@ -23,6 +23,7 @@ pub const TOTAL_LEDS: usize = LEDS_PER_STRAND * NUM_STRANDS; // 128 LEDs total
 pub const SAFE_MAX_COLOR_SUM: u32 = 6200;
 
 /// Max brightness for a single color channel (approx 30% of 255) to avoid blinding.
+#[cfg(feature = "dynamic-lighting")]
 pub const SAFE_MAX_PIXEL_COMPONENT: u8 = 76;
 
 /// Represents an RGB color value (0–255 per channel).
@@ -91,6 +92,7 @@ pub const fn compute_power_scale(total_sum: u32) -> u16 {
 }
 
 /// Calculate dynamic power and brightness scale factor (0-256) across all LEDs.
+#[cfg(feature = "dynamic-lighting")]
 pub fn compute_safe_scale(host_leds: &[Color; TOTAL_LEDS]) -> u16 {
     let mut total_sum: u32 = 0;
     let mut max_component: u8 = 0;
@@ -163,15 +165,23 @@ impl ParallelBitBuffer {
 pub fn fill_parallel_buffer_into(
     buf: &mut ParallelBitBuffer,
     host_leds: &[Color; TOTAL_LEDS],
-    scale: u16,
+    #[cfg(feature = "dynamic-lighting")] scale: u16,
 ) {
     let mut idx = 0usize;
 
     for led_pos in 0..LEDS_PER_STRAND {
-        // Scale brightness dynamically.
-        let c0 = host_leds[led_pos].scale_brightness(scale);
-        let c2 = host_leds[LEDS_PER_STRAND * 2 + led_pos].scale_brightness(scale);
-        let c3 = host_leds[LEDS_PER_STRAND * 3 + led_pos].scale_brightness(scale);
+        #[cfg(feature = "dynamic-lighting")]
+        let (c0, c2, c3) = (
+            host_leds[led_pos].scale_brightness(scale),
+            host_leds[LEDS_PER_STRAND * 2 + led_pos].scale_brightness(scale),
+            host_leds[LEDS_PER_STRAND * 3 + led_pos].scale_brightness(scale),
+        );
+        #[cfg(not(feature = "dynamic-lighting"))]
+        let (c0, c2, c3) = (
+            host_leds[led_pos],
+            host_leds[LEDS_PER_STRAND * 2 + led_pos],
+            host_leds[LEDS_PER_STRAND * 3 + led_pos],
+        );
 
         // WS2812 wire order: G → R → B.
         for (b0, b2, b3) in [(c0.g, c2.g, c3.g), (c0.r, c2.r, c3.r), (c0.b, c2.b, c3.b)] {
@@ -340,12 +350,16 @@ impl LedDriver {
 
     /// Transmit strand 1 (LEDs 32..63) on PC6. ~0.96 ms. Call `poll()` after.
     ///
-    /// Accepts a slice of exactly [`LEDS_PER_STRAND`] (32) colours, brightness-clamped
-    /// internally. Pass `&host_leds[LEDS_PER_STRAND..LEDS_PER_STRAND * 2]`.
-    pub fn send_strand1(&self, leds: &[Color], scale: u16) {
+    /// Accepts a slice of exactly [`LEDS_PER_STRAND`] (32) colours.
+    /// Pass `&host_leds[LEDS_PER_STRAND..LEDS_PER_STRAND * 2]`.
+    pub fn send_strand1(&self, leds: &[Color], #[cfg(feature = "dynamic-lighting")] scale: u16) {
         unsafe {
             for color in leds {
+                #[cfg(feature = "dynamic-lighting")]
                 let color = color.scale_brightness(scale);
+                #[cfg(not(feature = "dynamic-lighting"))]
+                let color = *color;
+
                 send_byte_pc6(color.g);
                 send_byte_pc6(color.r);
                 send_byte_pc6(color.b);
@@ -359,21 +373,29 @@ impl LedDriver {
         delay_us(80);
     }
 
-    /// Complete frame render pipeline: computes safe scaling, fills parallel bit buffer,
+    /// Complete frame render pipeline: computes safe scaling (if enabled), fills parallel bit buffer,
     /// transmits parallel PORTB strands, polls USB, transmits sequential PC6 strand,
     /// polls USB, and latches the frame.
     pub fn render_frame(&self, par_buf: &mut ParallelBitBuffer, host_leds: &[Color; TOTAL_LEDS]) {
+        #[cfg(feature = "dynamic-lighting")]
         let final_scale = compute_safe_scale(host_leds);
 
+        #[cfg(feature = "dynamic-lighting")]
         fill_parallel_buffer_into(par_buf, host_leds, final_scale);
+        #[cfg(not(feature = "dynamic-lighting"))]
+        fill_parallel_buffer_into(par_buf, host_leds);
 
         self.send_portb_parallel(par_buf);
         crate::usb::poll();
 
+        #[cfg(feature = "dynamic-lighting")]
         self.send_strand1(
             &host_leds[LEDS_PER_STRAND..LEDS_PER_STRAND * 2],
             final_scale,
         );
+        #[cfg(not(feature = "dynamic-lighting"))]
+        self.send_strand1(&host_leds[LEDS_PER_STRAND..LEDS_PER_STRAND * 2]);
+
         crate::usb::poll();
 
         self.latch_frame();
