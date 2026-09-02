@@ -40,6 +40,7 @@ jobs:
         run: |
           chmod +x scripts/build_firmware.sh
           ./scripts/build_firmware.sh --release
+          OUT_NAME=rf64_lowbrightness ./scripts/build_firmware.sh --release --no-default-features --features "boot-anim,apollo"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -49,6 +50,9 @@ jobs:
             target/rf64.elf
             target/rf64.bin
             target/rf64.hex
+            target/rf64_lowbrightness.elf
+            target/rf64_lowbrightness.bin
+            target/rf64_lowbrightness.hex
           retention-days: 1
 
   release:
@@ -91,4 +95,7 @@ jobs:
             artifacts/rf64.elf
             artifacts/rf64.bin
             artifacts/rf64.hex
+            artifacts/rf64_lowbrightness.elf
+            artifacts/rf64_lowbrightness.bin
+            artifacts/rf64_lowbrightness.hex
 

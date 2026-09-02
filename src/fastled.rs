@@ -121,13 +121,13 @@ pub fn fastrgb_decompress(data: &[u8], host_leds: &mut [Color; TOTAL_LEDS]) {
                 } else {
                     0b00000011
                 };
-                for k in 0..core::hint::black_box(8) {
+                for k in 0..8 {
                     fastrgb_set_unsafe(col | (k << 2), r, g, b, host_leds);
                 }
             } else {
                 // Entire row
                 let row = (x & 0b00000111) << 2;
-                for k in 0..core::hint::black_box(4) {
+                for k in 0..4 {
                     fastrgb_set_unsafe(row | k, r, g, b, host_leds);
                     fastrgb_set_unsafe(row | 0b00100000 | k, r, g, b, host_leds);
                 }

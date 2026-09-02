@@ -160,7 +160,7 @@ fn main() -> ! {
         let mut prev_fn_pressed = false;
 
         // Render initial category background colors for all buttons (~10% brightness)
-        for btn in 0..core::hint::black_box(64) {
+        for btn in 0..64 {
             let color = keyboard::get_button_color(btn, false, false);
             host_leds[btn * 2] = color;
             host_leds[btn * 2 + 1] = color;
@@ -215,7 +215,9 @@ fn main() -> ! {
     let mut animating = false;
 
     #[cfg(feature = "boot-anim")]
-    let mut life_timer: u8 = 0;
+    let mut last_anim_tcnt: u16 = 0;
+    #[cfg(feature = "boot-anim")]
+    let mut anim_substep = false;
 
     #[cfg(feature = "boot-anim")]
     let mut seconds_idle: u16 = 0;
@@ -240,6 +242,8 @@ fn main() -> ! {
                     snake_sim.reset();
                     dirty = true;
                     seconds_idle = 0;
+                    last_anim_tcnt = tcnt;
+                    anim_substep = false;
                 }
             }
         }
@@ -284,24 +288,29 @@ fn main() -> ! {
 
         // C. Boot animation ticker (snake game)
         //
-        // Two rendered frames per snake step for sub-cell LED smoothing:
-        //   tick 16 → half_step(): preview entry/exit LEDs of the upcoming move
-        //   tick 32 → step():      commit the move; both LEDs of new head lit
+        // Hardware-paced via Timer1 (15,625 Hz, 64us per tick):
+        //   1172 ticks (~75ms)  → half_step(): preview entry/exit LEDs
+        //   2344 ticks (~150ms) → step():      commit move; lit new head
         #[cfg(feature = "boot-anim")]
         if animating {
-            life_timer += 1;
-            if life_timer == 16 {
-                snake_sim.half_step();
-                dirty = true;
-            }
-            if life_timer >= 32 {
-                snake_sim.step();
-                life_timer = 0;
-                dirty = true;
-            }
+            let tcnt = dp.TC1.tcnt1().read().bits();
+            let elapsed = if tcnt >= last_anim_tcnt {
+                tcnt - last_anim_tcnt
+            } else {
+                tcnt + 15625 - last_anim_tcnt
+            };
 
-            if dirty {
+            if !anim_substep && elapsed >= 1172 {
+                snake_sim.half_step();
                 snake_sim.fill_leds(host_leds);
+                dirty = true;
+                anim_substep = true;
+            } else if anim_substep && elapsed >= 2344 {
+                snake_sim.step();
+                snake_sim.fill_leds(host_leds);
+                dirty = true;
+                anim_substep = false;
+                last_anim_tcnt = tcnt;
             }
         }
 

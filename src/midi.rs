@@ -33,8 +33,8 @@ const MIDI_VELOCITY: u8 = 127;
 /// Since each main loop cycle with LED updates takes ~5ms, 2 cycles = ~10ms debounce.
 const DEBOUNCE_CYCLES: u8 = 2;
 
-/// How many idle cycles to wait before considering the incoming MIDI stream stable (~300us).
-const IDLE_CYCLES_STABLE: u8 = 5;
+/// How many idle cycles to wait before considering an active incoming MIDI burst stable (~200us).
+const IDLE_CYCLES_STABLE: u8 = 20;
 
 // ── Debounce state ────────────────────────────────────────────────────────────
 
@@ -46,8 +46,8 @@ const IDLE_CYCLES_STABLE: u8 = 5;
 ///   2. Start the debounce counter.
 ///   3. Ignore further transitions until the counter expires (button stable).
 pub struct ButtonState {
-    /// Bitmask: `1` = button is considered PRESSED in the debounced state.
-    confirmed: u64,
+    /// Bitmask: `1` = button is considered PRESSED in the debounced state (8 bytes = 64 buttons).
+    confirmed: [u8; 8],
     /// Cycles remaining before the debounce window is open again (0 = ready).
     counter: [u8; 64],
 }
@@ -55,7 +55,7 @@ pub struct ButtonState {
 impl ButtonState {
     pub const fn new() -> Self {
         Self {
-            confirmed: 0,
+            confirmed: [0; 8],
             counter: [0; 64],
         }
     }
@@ -80,52 +80,57 @@ fn note_from_u8(n: u8) -> Note {
 ///
 /// Call once per main-loop iteration, after `buttons_read_raw()`.
 pub fn process_buttons(raw: u64, state: &mut ButtonState) {
-    for btn in 0..64usize {
-        let pressed = (raw & (1u64 << btn)) != 0;
+    let raw_bytes = raw.to_le_bytes();
+    for (byte_idx, &raw_byte) in raw_bytes.iter().enumerate() {
+        for bit_idx in 0..8 {
+            let btn = (byte_idx << 3) | bit_idx;
+            let mask = 1u8 << bit_idx;
+            let pressed = (raw_byte & mask) != 0;
 
-        if state.counter[btn] > 0 {
-            // Still in debounce window — count down and ignore transitions.
-            state.counter[btn] -= 1;
-            continue;
-        }
-
-        // Debounce window open: check for a new edge.
-        let was_confirmed = (state.confirmed & (1u64 << btn)) != 0;
-        if pressed != was_confirmed {
-            // First edge → fire immediately, then start debounce window.
-            if pressed {
-                state.confirmed |= 1u64 << btn;
-            } else {
-                state.confirmed &= !(1u64 << btn);
+            if state.counter[btn] > 0 {
+                // Still in debounce window — count down and ignore transitions.
+                state.counter[btn] -= 1;
+                continue;
             }
-            state.counter[btn] = DEBOUNCE_CYCLES;
 
-            let note_num = MIDI_BASENOTE + btn as u8;
-
-            // Retry a few times if the TX endpoint is busy (e.g. simultaneous
-            // button releases filling the FIFO). Silently dropping NoteOffs
-            // causes LEDs to stay lit in the host DAW.
-            for _ in 0..core::hint::black_box(4u8) {
-                let packet = UsbMidiEventPacket {
-                    cable_number: CableNumber::Cable0,
-                    message: if pressed {
-                        Message::NoteOn(
-                            MIDI_CHANNEL,
-                            note_from_u8(note_num),
-                            U7::from_clamped(MIDI_VELOCITY),
-                        )
-                    } else {
-                        Message::NoteOff(
-                            MIDI_CHANNEL,
-                            note_from_u8(note_num),
-                            U7::from_clamped(MIDI_VELOCITY),
-                        )
-                    },
-                };
-                if crate::usb::send_raw_packet(packet.into()).is_ok() {
-                    break;
+            // Debounce window open: check for a new edge using fast 8-bit mask.
+            let was_confirmed = (state.confirmed[byte_idx] & mask) != 0;
+            if pressed != was_confirmed {
+                // First edge → fire immediately, then start debounce window.
+                if pressed {
+                    state.confirmed[byte_idx] |= mask;
+                } else {
+                    state.confirmed[byte_idx] &= !mask;
                 }
-                crate::usb::poll(); // flush the TX endpoint and retry
+                state.counter[btn] = DEBOUNCE_CYCLES;
+
+                let note_num = MIDI_BASENOTE + btn as u8;
+
+                // Retry a few times if the TX endpoint is busy (e.g. simultaneous
+                // button releases filling the FIFO). Silently dropping NoteOffs
+                // causes LEDs to stay lit in the host DAW.
+                for _ in 0..core::hint::black_box(4u8) {
+                    let packet = UsbMidiEventPacket {
+                        cable_number: CableNumber::Cable0,
+                        message: if pressed {
+                            Message::NoteOn(
+                                MIDI_CHANNEL,
+                                note_from_u8(note_num),
+                                U7::from_clamped(MIDI_VELOCITY),
+                            )
+                        } else {
+                            Message::NoteOff(
+                                MIDI_CHANNEL,
+                                note_from_u8(note_num),
+                                U7::from_clamped(MIDI_VELOCITY),
+                            )
+                        },
+                    };
+                    if crate::usb::send_raw_packet(packet.into()).is_ok() {
+                        break;
+                    }
+                    crate::usb::poll(); // flush the TX endpoint and retry
+                }
             }
         }
     }
@@ -157,10 +162,11 @@ impl MidiRx {
         #[cfg(not(feature = "apollo"))] _sysex_parser_opt: Option<&mut ()>,
     ) -> (bool, bool) {
         let mut idle_cycles = 0;
-        let mut received_on = 0u64;
+        let mut received_on = [0u8; 8];
         let mut force_draw = false;
         let mut dirty = false;
         let mut activity = false;
+        let mut has_received_data = false;
 
         loop {
             crate::usb::poll();
@@ -168,6 +174,7 @@ impl MidiRx {
 
             while let Some(packet) = crate::usb::read_packet() {
                 read_any = true;
+                has_received_data = true;
 
                 let status = packet[1];
                 let note = packet[2];
@@ -217,39 +224,45 @@ impl MidiRx {
                     dirty = true;
                 } else if (is_on || is_off) && (MIDI_BASENOTE..(MIDI_BASENOTE + 64)).contains(&note)
                 {
-                    let btn = (note - MIDI_BASENOTE) as usize;
+                    // Only process LED updates on supported MIDI Fighter channels (Ch 3, 4, 5 => index 2, 3, 4)
+                    let is_supported_channel = matches!(channel, 2..=4);
+                    if is_supported_channel {
+                        let btn = (note - MIDI_BASENOTE) as usize;
+                        let byte_idx = btn >> 3;
+                        let bit_mask = 1u8 << (btn & 7);
 
-                    // Frame boundary detection: if this button already received an ON
-                    // in this burst, and now receives an OFF, we've crossed into the next frame!
-                    if is_off && (received_on & (1 << btn)) != 0 {
-                        crate::usb::unread_packet();
-                        force_draw = true;
-                        break;
-                    }
-                    if is_on {
-                        received_on |= 1 << btn;
-                    }
+                        // Frame boundary detection: if this button already received an ON
+                        // in this burst, and now receives an OFF, we've crossed into the next frame!
+                        if is_off && (received_on[byte_idx] & bit_mask) != 0 {
+                            crate::usb::unread_packet();
+                            force_draw = true;
+                            break;
+                        }
+                        if is_on {
+                            received_on[byte_idx] |= bit_mask;
+                        }
 
-                    let color = if is_on {
-                        crate::palette::ABLETON_COLORS.load_at(velocity as usize)
-                    } else {
-                        crate::led::Color::BLACK
-                    };
-                    let base_led = btn * 2;
-                    match channel {
-                        2 => {
-                            host_leds[base_led] = color;
-                            host_leds[base_led + 1] = color;
+                        let color = if is_on {
+                            crate::palette::ABLETON_COLORS.load_at(velocity as usize)
+                        } else {
+                            crate::led::Color::BLACK
+                        };
+                        let base_led = btn * 2;
+                        match channel {
+                            2 => {
+                                host_leds[base_led] = color;
+                                host_leds[base_led + 1] = color;
+                            }
+                            3 => {
+                                host_leds[base_led] = color;
+                            }
+                            4 => {
+                                host_leds[base_led + 1] = color;
+                            }
+                            _ => {}
                         }
-                        3 => {
-                            host_leds[base_led] = color;
-                        }
-                        4 => {
-                            host_leds[base_led + 1] = color;
-                        }
-                        _ => {}
+                        dirty = true;
                     }
-                    dirty = true;
                 }
 
                 if force_draw {
@@ -264,9 +277,13 @@ impl MidiRx {
             if read_any {
                 idle_cycles = 0; // reset idle counter if we got data
             } else {
+                // If no data was pending on entry, exit immediately (0us latency for main loop)
+                if !has_received_data {
+                    break;
+                }
                 idle_cycles += 1;
                 if idle_cycles > IDLE_CYCLES_STABLE {
-                    break; // ~300us of idle time, stream is stable
+                    break; // stream is stable
                 }
                 crate::delay::delay_us(10);
             }

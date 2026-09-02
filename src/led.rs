@@ -183,13 +183,31 @@ pub fn fill_parallel_buffer_into(
             host_leds[LEDS_PER_STRAND * 3 + led_pos],
         );
 
+        // Fast path: if all three strands at this position are completely black,
+        // fill all 24 bitmasks with zero and skip bit packing.
+        if (c0.g | c0.r | c0.b | c2.g | c2.r | c2.b | c3.g | c3.r | c3.b) == 0 {
+            buf.masks[idx..idx + 24].fill(0);
+            idx += 24;
+            continue;
+        }
+
         // WS2812 wire order: G → R → B.
-        for (b0, b2, b3) in [(c0.g, c2.g, c3.g), (c0.r, c2.r, c3.r), (c0.b, c2.b, c3.b)] {
+        for (mut b0, mut b2, mut b3) in [(c0.g, c2.g, c3.g), (c0.r, c2.r, c3.r), (c0.b, c2.b, c3.b)] {
+            if (b0 | b2 | b3) == 0 {
+                buf.masks[idx..idx + 8].fill(0);
+                idx += 8;
+                continue;
+            }
+
             // MSB first (bit 7 down to 0).
-            for bit in (0..8u8).rev() {
-                buf.masks[idx] =
-                    ((b0 >> bit) & 1) << 6 | ((b2 >> bit) & 1) << 5 | ((b3 >> bit) & 1) << 4;
+            // Shift MSB directly to port bits: PB6 (bit 6), PB5 (bit 5), PB4 (bit 4).
+            for _ in 0..8 {
+                let m = ((b0 & 0x80) >> 1) | ((b2 & 0x80) >> 2) | ((b3 & 0x80) >> 3);
+                buf.masks[idx] = m;
                 idx += 1;
+                b0 <<= 1;
+                b2 <<= 1;
+                b3 <<= 1;
             }
         }
     }
