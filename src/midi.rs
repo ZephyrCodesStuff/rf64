@@ -115,6 +115,13 @@ pub struct MidiRx {
     note_off_clock_started: bool,
 }
 
+pub struct MidiBatch {
+    pub dirty: bool,
+    pub activity: bool,
+    #[cfg(feature = "instrumentation")]
+    pub packets: u16,
+}
+
 impl MidiRx {
     pub const fn new() -> Self {
         Self {
@@ -193,7 +200,7 @@ impl MidiRx {
     /// LED transmission itself remains scheduled by the fixed-rate renderer.
     ///
     /// Updates `host_leds`, cancels `animating` if host data arrives, and returns
-    /// `(dirty, activity)` tuple.
+    /// Per-batch state and the number of USB-MIDI packets drained.
     pub fn drain_stable_batch(
         &mut self,
         host_leds: &mut [crate::led::Color; crate::led::TOTAL_LEDS],
@@ -201,9 +208,11 @@ impl MidiRx {
         #[cfg(feature = "apollo")] mut sysex_parser_opt: Option<&mut crate::sysex::SysExParser>,
         #[cfg(not(feature = "apollo"))] _sysex_parser_opt: Option<&mut ()>,
         mut read_timer_tick: impl FnMut() -> u16,
-    ) -> (bool, bool) {
+    ) -> MidiBatch {
         let mut dirty = false;
         let mut activity = false;
+        #[cfg(feature = "instrumentation")]
+        let mut packets = 0u16;
         let mut idle_cycles = 0u8;
         let mut has_received_data = false;
 
@@ -211,6 +220,10 @@ impl MidiRx {
             crate::usb::poll();
             let mut read_any = false;
             while let Some(packet) = crate::usb::read_packet() {
+                #[cfg(feature = "instrumentation")]
+                {
+                    packets = packets.saturating_add(1);
+                }
                 read_any = true;
                 has_received_data = true;
                 let status = packet[1];
@@ -337,6 +350,11 @@ impl MidiRx {
         }
 
         dirty |= self.advance_note_offs(host_leds, read_timer_tick());
-        (dirty, activity)
+        MidiBatch {
+            dirty,
+            activity,
+            #[cfg(feature = "instrumentation")]
+            packets,
+        }
     }
 }

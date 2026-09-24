@@ -16,6 +16,7 @@ keyboard = []
 apollo = []
 mystrix = []
 dynamic-lighting = []
+instrumentation = []
 
 [dependencies]
 

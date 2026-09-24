@@ -10,6 +10,8 @@ mod delay;
 #[cfg(feature = "apollo")]
 mod fastled;
 mod gpio;
+#[cfg(feature = "instrumentation")]
+mod instrumentation;
 #[cfg(feature = "keyboard")]
 mod keyboard;
 mod led;
@@ -72,6 +74,10 @@ static mut SNAKE_SIM: boot_anim::SnakeSim = boot_anim::SnakeSim::new();
 
 /// Debounced button state. In BSS (~144 bytes) to keep it off main()'s stack frame.
 static mut DEBOUNCER: Debouncer = Debouncer::new();
+
+/// Optional telemetry state stays in BSS instead of growing main's stack frame.
+#[cfg(feature = "instrumentation")]
+static mut METRICS: instrumentation::Metrics = instrumentation::Metrics::new();
 
 /// Limit LED frame updates to about 300 Hz (52 × 64 µs timer ticks).
 const LED_FRAME_INTERVAL_TICKS: u16 = 52;
@@ -282,12 +288,31 @@ fn main() -> ! {
         #[cfg(not(feature = "apollo"))]
         let sysex_parser_opt: Option<&mut ()> = None;
 
+        #[cfg(feature = "instrumentation")]
+        let midi_started_tick = dp.TC1.tcnt1().read().bits();
         let midi = midi_rx.drain_stable_batch(host_leds, &mut animating, sysex_parser_opt, || {
             dp.TC1.tcnt1().read().bits()
         });
+        #[cfg(feature = "instrumentation")]
+        {
+            let elapsed = dp
+                .TC1
+                .tcnt1()
+                .read()
+                .bits()
+                .wrapping_sub(midi_started_tick);
+            let metrics = unsafe { &mut *core::ptr::addr_of_mut!(METRICS) };
+            instrumentation::TraceSink::event(
+                metrics,
+                instrumentation::TraceEvent::MidiBatch {
+                    packet_count: midi.packets,
+                    duration_ticks: elapsed,
+                },
+            );
+        }
 
         // Midi dirty
-        if midi.0 {
+        if midi.dirty {
             dirty = true;
         }
 
@@ -302,7 +327,7 @@ fn main() -> ! {
 
         // Reset idle timer and stop boot animation if physical button or MIDI received
         #[cfg(feature = "boot-anim")]
-        if midi.1 || button_activity {
+        if midi.activity || button_activity {
             seconds_idle = 0;
             if animating {
                 animating = false; // Stop boot animation if button is pressed or MIDI received
@@ -339,9 +364,35 @@ fn main() -> ! {
         let frame_tick = dp.TC1.tcnt1().read().bits();
         if dirty && frame_tick.wrapping_sub(last_frame_tick) >= LED_FRAME_INTERVAL_TICKS {
             let par_buf = unsafe { &mut *core::ptr::addr_of_mut!(PAR_BUF) };
+            #[cfg(feature = "instrumentation")]
+            let render_started_tick = dp.TC1.tcnt1().read().bits();
             led_driver.render_frame(par_buf, host_leds);
+            #[cfg(feature = "instrumentation")]
+            {
+                let elapsed = dp
+                    .TC1
+                    .tcnt1()
+                    .read()
+                    .bits()
+                    .wrapping_sub(render_started_tick);
+                let metrics = unsafe { &mut *core::ptr::addr_of_mut!(METRICS) };
+                instrumentation::TraceSink::event(
+                    metrics,
+                    instrumentation::TraceEvent::RenderFrame {
+                        duration_ticks: elapsed,
+                    },
+                );
+            }
             dirty = false;
             last_frame_tick = frame_tick;
+        }
+
+        #[cfg(feature = "instrumentation")]
+        {
+            let now_tick = dp.TC1.tcnt1().read().bits();
+            let metrics = unsafe { &mut *core::ptr::addr_of_mut!(METRICS) };
+            let mut transport = instrumentation::MidiSysExTransport;
+            metrics.report_if_due(now_tick, &mut transport);
         }
     }
 }

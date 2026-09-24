@@ -29,5 +29,7 @@ rustflags = [
     "-C",
     "link-arg=-Wl,--gc-sections",
     "-C",
+    "link-arg=-Wl,--relax",
+    "-C",
     "no-vectorize-loops",
 ]
