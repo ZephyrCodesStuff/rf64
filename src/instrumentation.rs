@@ -151,12 +151,8 @@ impl TraceSink for Metrics {
         match event {
             TraceEvent::RenderFrame { duration_ticks } => {
                 self.frames = self.frames.saturating_add(1);
-                self.render_ticks_total = self
-                    .render_ticks_total
-                    .saturating_add(duration_ticks);
-                self.render_ticks_max = self
-                    .render_ticks_max
-                    .max(duration_ticks.min(127) as u8);
+                self.render_ticks_total = self.render_ticks_total.saturating_add(duration_ticks);
+                self.render_ticks_max = self.render_ticks_max.max(duration_ticks.min(127) as u8);
             }
             TraceEvent::MidiBatch {
                 packet_count,
@@ -165,15 +161,14 @@ impl TraceSink for Metrics {
                 self.midi_packets = self.midi_packets.saturating_add(packet_count);
                 self.midi_batches = self.midi_batches.saturating_add(1);
                 self.midi_batch_packets_max = self.midi_batch_packets_max.max(packet_count);
-                self.midi_batch_ticks_max = self
-                    .midi_batch_ticks_max
-                    .max(duration_ticks.min(127) as u8);
+                self.midi_batch_ticks_max =
+                    self.midi_batch_ticks_max.max(duration_ticks.min(127) as u8);
             }
         }
     }
 }
 
-fn put_u14(bytes: &mut [u8; REPORT_LEN], at: usize, value: u16) {
+const fn put_u14(bytes: &mut [u8; REPORT_LEN], at: usize, value: u16) {
     bytes[at] = value as u8 & 0x7F;
     bytes[at + 1] = (value >> 7) as u8 & 0x7F;
 }

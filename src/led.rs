@@ -162,6 +162,7 @@ impl ParallelBitBuffer {
 /// - Strand 1 (PC6):        `host_leds[ 32 ..  64]`  ← handled separately
 /// - Strand 2 (PB5, bit 5): `host_leds[ 64 ..  96]`
 /// - Strand 3 (PB4, bit 4): `host_leds[ 96 .. 128]`
+///
 /// Pack 8 simultaneous bits from 3 color channel bytes into 8 consecutive PORTB mask bytes.
 ///
 /// Strand 0 maps to PB6 (0x40), Strand 2 to PB5 (0x20), Strand 3 to PB4 (0x10).

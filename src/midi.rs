@@ -133,7 +133,7 @@ impl MidiRx {
     }
 
     #[inline(always)]
-    fn cancel_note_off(&mut self, led_index: usize) {
+    const fn cancel_note_off(&mut self, led_index: usize) {
         let byte = led_index >> 3;
         let mask = !(1 << (led_index & 7));
         self.note_off_stage0[byte] &= mask;
@@ -141,7 +141,7 @@ impl MidiRx {
     }
 
     #[inline(always)]
-    fn schedule_note_off(&mut self, led_index: usize) {
+    const fn schedule_note_off(&mut self, led_index: usize) {
         let byte = led_index >> 3;
         let mask = 1 << (led_index & 7);
         self.note_off_stage1[byte] &= !mask;

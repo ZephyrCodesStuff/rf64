@@ -191,12 +191,6 @@ impl<'a, B: UsbBus> MidiClass<'a, B> {
             Err(usb_device::UsbError::WouldBlock)
         }
     }
-
-    pub const fn unread_packet(&mut self) {
-        if self.read_pos >= 4 {
-            self.read_pos -= 4;
-        }
-    }
 }
 
 impl<B: UsbBus> UsbClass<B> for MidiClass<'_, B> {
@@ -462,11 +456,6 @@ pub fn poll() -> bool {
 pub fn read_packet() -> Option<[u8; 4]> {
     let midi = unsafe { (*core::ptr::addr_of_mut!(MIDI_STORAGE)).assume_init_mut() };
     midi.read_packet().ok()
-}
-
-pub fn unread_packet() {
-    let midi = unsafe { (*core::ptr::addr_of_mut!(MIDI_STORAGE)).assume_init_mut() };
-    midi.unread_packet();
 }
 
 pub fn send_raw_packet(bytes: [u8; 4]) -> usb_device::Result<usize> {
