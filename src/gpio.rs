@@ -8,31 +8,42 @@
 
 use atmega_hal::pac::{PORTB, PORTC};
 
-pub struct LedPins {
-    _private: (),
-}
+#[non_exhaustive] // Prevent manual instantiation
+pub struct LedPins {}
 
 impl LedPins {
     /// Initialize PB4, PB5, PB6, and PC6 as digital outputs.
-    pub fn init(port_b: &PORTB, port_c: &PORTC) -> Self {
-        // Set PB4, PB5, PB6 as outputs (DDRB bits 4, 5, 6 = 1)
-        port_b
-            .ddrb()
-            .modify(|r, w| unsafe { w.bits(r.bits() | (1 << 4) | (1 << 5) | (1 << 6)) });
+    pub fn setup(port_b: &PORTB, port_c: &PORTC) -> Self {
+        // Configure the LED pins as output pins
+        port_b.ddrb().modify(|_, w| {
+            w.pb4().set_bit();
+            w.pb5().set_bit();
+            w.pb6().set_bit();
 
-        // Set PC6 as output (DDRC bit 6 = 1)
-        port_c
-            .ddrc()
-            .modify(|r, w| unsafe { w.bits(r.bits() | (1 << 6)) });
+            w
+        });
 
-        // Ensure all pins start LOW
-        port_b
-            .portb()
-            .modify(|r, w| unsafe { w.bits(r.bits() & !((1 << 4) | (1 << 5) | (1 << 6))) });
-        port_c
-            .portc()
-            .modify(|r, w| unsafe { w.bits(r.bits() & !(1 << 6)) });
+        port_c.ddrc().modify(|_, w| {
+            w.pc6().set_bit();
 
-        Self { _private: () }
+            w
+        });
+
+        // Ensure all pins start fully low
+        port_b.portb().modify(|_, w| {
+            w.pb4().clear_bit();
+            w.pb5().clear_bit();
+            w.pb6().clear_bit();
+
+            w
+        });
+
+        port_c.portc().modify(|_, w| {
+            w.pc6().clear_bit();
+
+            w
+        });
+
+        Self {}
     }
 }

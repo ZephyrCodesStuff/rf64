@@ -192,7 +192,8 @@ pub fn fill_parallel_buffer_into(
         }
 
         // WS2812 wire order: G → R → B.
-        for (mut b0, mut b2, mut b3) in [(c0.g, c2.g, c3.g), (c0.r, c2.r, c3.r), (c0.b, c2.b, c3.b)] {
+        for (mut b0, mut b2, mut b3) in [(c0.g, c2.g, c3.g), (c0.r, c2.r, c3.r), (c0.b, c2.b, c3.b)]
+        {
             if (b0 | b2 | b3) == 0 {
                 buf.masks[idx..idx + 8].fill(0);
                 idx += 8;

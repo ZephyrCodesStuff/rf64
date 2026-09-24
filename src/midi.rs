@@ -29,37 +29,8 @@ const MIDI_CHANNEL: Channel = Channel::Channel15;
 /// NOTE: The 2017 MF64 C firmware used 74, but Launchpads always send 127, so we do the same for consistency.
 const MIDI_VELOCITY: u8 = 127;
 
-/// How many `poll()` cycles a button must be stable before direction changes.
-/// Since each main loop cycle with LED updates takes ~5ms, 2 cycles = ~10ms debounce.
-const DEBOUNCE_CYCLES: u8 = 2;
-
 /// How many idle cycles to wait before considering an active incoming MIDI burst stable (~200us).
 const IDLE_CYCLES_STABLE: u8 = 20;
-
-// ── Debounce state ────────────────────────────────────────────────────────────
-
-/// Per-button debounce state machine.
-///
-/// We use the "send-on-first-edge, suppress-until-stable" strategy:
-///   1. On the very first detected edge (press OR release), emit the MIDI
-///      message instantly for minimum latency.
-///   2. Start the debounce counter.
-///   3. Ignore further transitions until the counter expires (button stable).
-pub struct ButtonState {
-    /// Bitmask: `1` = button is considered PRESSED in the debounced state (8 bytes = 64 buttons).
-    confirmed: [u8; 8],
-    /// Cycles remaining before the debounce window is open again (0 = ready).
-    counter: [u8; 64],
-}
-
-impl ButtonState {
-    pub const fn new() -> Self {
-        Self {
-            confirmed: [0; 8],
-            counter: [0; 64],
-        }
-    }
-}
 
 // ── Note number → usbd-midi Note ─────────────────────────────────────────────
 
@@ -74,65 +45,61 @@ fn note_from_u8(n: u8) -> Note {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Process the current raw button bitmask against the previous debounce state.
-/// Sends NoteOn/NoteOff immediately on first edge, then locks out for
-/// `DEBOUNCE_CYCLES` cycles to suppress bounce.
-///
-/// Call once per main-loop iteration, after `buttons_read_raw()`.
-pub fn process_buttons(raw: u64, state: &mut ButtonState) {
-    let raw_bytes = raw.to_le_bytes();
-    for (byte_idx, &raw_byte) in raw_bytes.iter().enumerate() {
-        for bit_idx in 0..8 {
-            let btn = (byte_idx << 3) | bit_idx;
-            let mask = 1u8 << bit_idx;
-            let pressed = (raw_byte & mask) != 0;
+/// Send MIDI NoteOn/NoteOff for button state transitions.
+pub fn send_button_events(pressed_mask: u64, released_mask: u64) {
+    if pressed_mask == 0 && released_mask == 0 {
+        return;
+    }
 
-            if state.counter[btn] > 0 {
-                // Still in debounce window — count down and ignore transitions.
-                state.counter[btn] -= 1;
-                continue;
-            }
-
-            // Debounce window open: check for a new edge using fast 8-bit mask.
-            let was_confirmed = (state.confirmed[byte_idx] & mask) != 0;
-            if pressed != was_confirmed {
-                // First edge → fire immediately, then start debounce window.
-                if pressed {
-                    state.confirmed[byte_idx] |= mask;
-                } else {
-                    state.confirmed[byte_idx] &= !mask;
-                }
-                state.counter[btn] = DEBOUNCE_CYCLES;
-
-                let note_num = MIDI_BASENOTE + btn as u8;
-
-                // Retry a few times if the TX endpoint is busy (e.g. simultaneous
-                // button releases filling the FIFO). Silently dropping NoteOffs
-                // causes LEDs to stay lit in the host DAW.
-                for _ in 0..core::hint::black_box(4u8) {
-                    let packet = UsbMidiEventPacket {
-                        cable_number: CableNumber::Cable0,
-                        message: if pressed {
-                            Message::NoteOn(
-                                MIDI_CHANNEL,
-                                note_from_u8(note_num),
-                                U7::from_clamped(MIDI_VELOCITY),
-                            )
-                        } else {
-                            Message::NoteOff(
-                                MIDI_CHANNEL,
-                                note_from_u8(note_num),
-                                U7::from_clamped(MIDI_VELOCITY),
-                            )
-                        },
-                    };
-                    if crate::usb::send_raw_packet(packet.into()).is_ok() {
-                        break;
-                    }
-                    crate::usb::poll(); // flush the TX endpoint and retry
-                }
-            }
+    for (byte_idx, &byte) in pressed_mask.to_le_bytes().iter().enumerate() {
+        let mut b = byte;
+        while b != 0 {
+            let bit = b.trailing_zeros() as u8;
+            let btn = ((byte_idx as u8) << 3) | bit;
+            send_button_event(btn, true);
+            b &= b - 1;
         }
+    }
+
+    for (byte_idx, &byte) in released_mask.to_le_bytes().iter().enumerate() {
+        let mut b = byte;
+        while b != 0 {
+            let bit = b.trailing_zeros() as u8;
+            let btn = ((byte_idx as u8) << 3) | bit;
+            send_button_event(btn, false);
+            b &= b - 1;
+        }
+    }
+}
+
+/// Send a single NoteOn or NoteOff event for a button with retry logic on USB buffer full.
+pub fn send_button_event(btn: u8, pressed: bool) {
+    let note_num = MIDI_BASENOTE + btn;
+
+    // Retry a few times if the TX endpoint is busy (e.g. simultaneous
+    // button releases filling the FIFO). Silently dropping NoteOffs
+    // causes LEDs to stay lit in the host DAW.
+    for _ in 0..core::hint::black_box(4u8) {
+        let packet = UsbMidiEventPacket {
+            cable_number: CableNumber::Cable0,
+            message: if pressed {
+                Message::NoteOn(
+                    MIDI_CHANNEL,
+                    note_from_u8(note_num),
+                    U7::from_clamped(MIDI_VELOCITY),
+                )
+            } else {
+                Message::NoteOff(
+                    MIDI_CHANNEL,
+                    note_from_u8(note_num),
+                    U7::from_clamped(MIDI_VELOCITY),
+                )
+            },
+        };
+        if crate::usb::send_raw_packet(packet.into()).is_ok() {
+            break;
+        }
+        crate::usb::poll(); // flush the TX endpoint and retry
     }
 }
 

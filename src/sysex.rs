@@ -170,8 +170,12 @@ impl SysExParser {
             feature = "mystrix" => match self.state {
                 State::Mystrix(MystrixState::Header) => {
                     self.state = if packet[1] == 0x5E {
-                        if valid_bytes >= 2 { self.push(packet[2]); }
-                        if valid_bytes == 3 { self.push(packet[3]); }
+                        if valid_bytes >= 2 {
+                            self.push(packet[2]);
+                        }
+                        if valid_bytes == 3 {
+                            self.push(packet[3]);
+                        }
                         State::Mystrix(MystrixState::Data)
                     } else {
                         State::Invalid
@@ -240,20 +244,18 @@ impl SysExParser {
                 if payload.len() >= 2 && payload[0] == 0x06 && payload[1] == 0x01 {
                     let response = cfg_select! {
                         feature = "mystrix" => [
-                            0xF0, 0x7E, 0x7F, 0x06, 0x02,
-                            0x00, 0x02, 0x03, 0x4D, 0x58, // Mystrix manufacturer ID
-                            0x11, 0x01,
-                            0x00, 0x00, 0x00, 0x01,
-                            0xF7,
+                            0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x02, 0x03, 0x4D,
+                            0x58, // Mystrix manufacturer ID
+                            0x11, 0x01, 0x00, 0x00, 0x00, 0x01, 0xF7,
                         ],
                         _ => [
-                            0xF0, 0x7E, 0x7F, 0x06, 0x02,
-                            0x00, 0x01, 0x79, // DJTT manufacturer ID
-                            0x06, 0x00,       // Family
-                            0x01, 0x00,       // Model
-                            0x30, 0x24,       // Year MSB, LSB
-                            0x03,             // Month
-                            0x20,             // Day
+                            0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x01,
+                            0x79, // DJTT manufacturer ID
+                            0x06, 0x00, // Family
+                            0x01, 0x00, // Model
+                            0x30, 0x24, // Year MSB, LSB
+                            0x03, // Month
+                            0x20, // Day
                             0xF7,
                         ],
                     };

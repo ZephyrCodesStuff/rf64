@@ -20,11 +20,10 @@ mod palette;
 mod sysex;
 mod usb;
 
-use buttons::{buttons_read_raw, buttons_setup};
+use buttons::{ButtonMatrix, Debouncer};
 use gpio::LedPins;
 use led::{Color, LedDriver};
-use mcu::init_hardware_safeguards;
-use midi::{MidiRx, process_buttons};
+use midi::{MidiRx, send_button_events};
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
@@ -71,32 +70,48 @@ static mut SYSEX_PARSER: sysex::SysExParser = sysex::SysExParser::new();
 #[cfg(feature = "boot-anim")]
 static mut SNAKE_SIM: boot_anim::SnakeSim = boot_anim::SnakeSim::new();
 
-/// Debounced button state. In BSS (~128 bytes) to keep it off main()'s stack frame.
-static mut BTN_STATE: midi::ButtonState = midi::ButtonState::new();
+/// Debounced button state. In BSS (~144 bytes) to keep it off main()'s stack frame.
+static mut DEBOUNCER: Debouncer = Debouncer::new();
 
 #[atmega_hal::entry]
 fn main() -> ! {
+    // -------------------------------------------------------------------------
     // 0. Disable interrupts immediately! LUFA bootloader may leave them enabled,
     //    causing immediate resets or breaking WDT disable timing.
+    // -------------------------------------------------------------------------
     avr_device::interrupt::disable();
 
     // -------------------------------------------------------------------------
     // 1. Low-level hardware safeguards (WDT disable, bootloader check, 16 MHz, JTAG disable)
     // -------------------------------------------------------------------------
-    init_hardware_safeguards();
+    let dp = atmega_hal::Peripherals::take().expect("could not take peripherals");
+
+    // Check if the user has requested to jump to bootloader
+    bootloader::check_bootloader_requested(&dp);
+
+    // Set clock to max speed (16 MHz)
+    //
+    // Datasheet specifies this to use the same mechanism as WDT: enable then set within next 4 clock cycles
+    dp.CPU.clkpr().write(|w| w.clkpce().set_bit());
+    dp.CPU.clkpr().write(|w| w.clkps().val_0x00());
+
+    // Disable JTAG to free GPIO ports C and F
+    //
+    // Doing this twice is _intended_: it is a datasheet security measure against glitches
+    dp.JTAG.mcucr().write(|w| w.jtd().set_bit());
+    dp.JTAG.mcucr().write(|w| w.jtd().set_bit());
 
     // -------------------------------------------------------------------------
     // 2. Initialize HAL peripherals, button matrix & LED driver
     // -------------------------------------------------------------------------
-    let dp = unsafe { atmega_hal::Peripherals::steal() };
-    let _led_pins = LedPins::init(&dp.PORTB, &dp.PORTC);
+    LedPins::setup(&dp.PORTB, &dp.PORTC);
 
-    // Initialize Timer1 for 1-second idle counting (prescaler 1024 => 15,625 Hz at 16 MHz)
-    #[cfg(feature = "boot-anim")]
+    // Initialize Timer1 as a free-running 16-bit monotonic counter
+    // Prescaler 1024 => 15,625 Hz at 16 MHz (1 tick = 64 µs, wraps every ~4.19s)
     dp.TC1.tccr1b().write(|w| unsafe { w.bits(0x05) });
 
     let pins = atmega_hal::pins!(dp);
-    buttons_setup(pins.pd7, pins.pd6, pins.pc7);
+    let mut button_matrix = ButtonMatrix::new(pins.pd7, pins.pd6, pins.pc7);
 
     // Give hardware (WS2812 LEDs and CD4021B shift registers) a moment to stabilize
     // their power state before we read buttons or blast LED data.
@@ -105,7 +120,7 @@ fn main() -> ! {
     let led_driver = LedDriver::new();
     let midi_rx = MidiRx::new();
 
-    let initial_buttons = buttons_read_raw();
+    let initial_buttons = button_matrix.read_raw();
 
     // Jump into DFU bootloader if Button 0 (bit 0) is held down at startup
     if bootloader::bootloader_combo_held(initial_buttons) {
@@ -113,7 +128,9 @@ fn main() -> ! {
         let par_buf = unsafe { &mut *core::ptr::addr_of_mut!(PAR_BUF) };
         led_driver.send_checkerboard_direct(par_buf, Color::ORANGE);
 
-        bootloader::jump_to_bootloader();
+        // SAFETY: we aren't touching pins or buttons, only the watchdog
+        let p = unsafe { atmega_hal::Peripherals::steal() };
+        bootloader::request_bootloader(&p);
     }
 
     // DEBUG: Trigger a panic if Button 1 (2nd button, bit 1) is held down at startup
@@ -146,7 +163,7 @@ fn main() -> ! {
 
     // SAFETY: single-threaded; all statics are only accessed from this function.
     let host_leds = unsafe { &mut *core::ptr::addr_of_mut!(HOST_LEDS) };
-    let btn_state = unsafe { &mut *core::ptr::addr_of_mut!(BTN_STATE) };
+    let debouncer = unsafe { &mut *core::ptr::addr_of_mut!(DEBOUNCER) };
     #[cfg(feature = "boot-anim")]
     let snake_sim = unsafe { &mut *core::ptr::addr_of_mut!(SNAKE_SIM) };
     #[cfg(feature = "boot-anim")]
@@ -173,8 +190,11 @@ fn main() -> ! {
         loop {
             crate::usb::poll();
 
-            let pressed_buttons = buttons_read_raw();
-            let (report, is_fn_pressed) = keyboard::build_keyboard_report(pressed_buttons);
+            let now_tick = dp.TC1.tcnt1().read().bits();
+            let raw_buttons = button_matrix.read_raw();
+            let _ = debouncer.update(raw_buttons, now_tick);
+
+            let (report, is_fn_pressed) = keyboard::build_keyboard_report(debouncer.state);
 
             let fn_changed = is_fn_pressed != prev_fn_pressed;
             let report_changed = report != prev_report;
@@ -191,7 +211,7 @@ fn main() -> ! {
                 // Full category color when pressed, dim category color when unpressed
                 // Colors change dynamically based on active layer!
                 for btn in 0..64 {
-                    let is_pressed = (pressed_buttons & (1u64 << btn)) != 0;
+                    let is_pressed = (debouncer.state & (1u64 << btn)) != 0;
                     let color = keyboard::get_button_color(btn, is_pressed, is_fn_pressed);
                     host_leds[btn * 2] = color;
                     host_leds[btn * 2 + 1] = color;
@@ -215,7 +235,9 @@ fn main() -> ! {
     let mut animating = false;
 
     #[cfg(feature = "boot-anim")]
-    let mut last_anim_tcnt: u16 = 0;
+    let mut last_second_tick: u16 = 0;
+    #[cfg(feature = "boot-anim")]
+    let mut last_anim_tick: u16 = 0;
     #[cfg(feature = "boot-anim")]
     let mut anim_substep = false;
 
@@ -229,20 +251,22 @@ fn main() -> ! {
         // ALWAYS poll the USB device so it can process setup packets and enumeration
         crate::usb::poll();
 
+        let now_tick = dp.TC1.tcnt1().read().bits();
+
         // 0. Monitor 1-second hardware timer tick (15,625 Hz) for idle timeout
         #[cfg(feature = "boot-anim")]
         {
-            let tcnt = dp.TC1.tcnt1().read().bits();
-            if tcnt >= 15625 {
-                dp.TC1.tcnt1().write(|w| unsafe { w.bits(tcnt - 15625) });
-                seconds_idle += 1;
+            let elapsed_sec = now_tick.wrapping_sub(last_second_tick);
+            if elapsed_sec >= 15625 {
+                last_second_tick = last_second_tick.wrapping_add(15625);
+                seconds_idle = seconds_idle.saturating_add(1);
 
                 if seconds_idle >= 256 && !animating {
                     animating = true;
                     snake_sim.reset();
                     dirty = true;
                     seconds_idle = 0;
-                    last_anim_tcnt = tcnt;
+                    last_anim_tick = now_tick;
                     anim_substep = false;
                 }
             }
@@ -261,30 +285,25 @@ fn main() -> ! {
             dirty = true;
         }
 
-        // Midi activity
+        // B. Button matrix scanning & time-debounced MIDI TX
+        let raw_buttons = button_matrix.read_raw();
+        let (pressed_edges, released_edges) = debouncer.update(raw_buttons, now_tick);
+        let button_activity = (pressed_edges | released_edges) != 0;
+
+        if button_activity {
+            send_button_events(pressed_edges, released_edges);
+        }
+
+        // Reset idle timer and stop boot animation if physical button or MIDI received
         #[cfg(feature = "boot-anim")]
-        if midi.1 {
+        if midi.1 || button_activity {
             seconds_idle = 0;
-            dp.TC1.tcnt1().write(|w| unsafe { w.bits(0) });
-        }
-
-        // B. Button matrix scanning & debounced MIDI TX
-        let pressed_buttons = buttons_read_raw();
-        if pressed_buttons != 0 {
-            // Reset idle timer on physical button press
-            #[cfg(feature = "boot-anim")]
-            {
-                seconds_idle = 0;
-                dp.TC1.tcnt1().write(|w| unsafe { w.bits(0) });
-            }
-
             if animating {
-                animating = false; // Stop boot animation if physical button is pressed
+                animating = false; // Stop boot animation if button is pressed or MIDI received
                 host_leds.fill(Color::BLACK);
+                dirty = true;
             }
-            dirty = true;
         }
-        process_buttons(pressed_buttons, btn_state);
 
         // C. Boot animation ticker (snake game)
         //
@@ -293,12 +312,7 @@ fn main() -> ! {
         //   2344 ticks (~150ms) → step():      commit move; lit new head
         #[cfg(feature = "boot-anim")]
         if animating {
-            let tcnt = dp.TC1.tcnt1().read().bits();
-            let elapsed = if tcnt >= last_anim_tcnt {
-                tcnt - last_anim_tcnt
-            } else {
-                tcnt + 15625 - last_anim_tcnt
-            };
+            let elapsed = now_tick.wrapping_sub(last_anim_tick);
 
             if !anim_substep && elapsed >= 1172 {
                 snake_sim.half_step();
@@ -310,7 +324,7 @@ fn main() -> ! {
                 snake_sim.fill_leds(host_leds);
                 dirty = true;
                 anim_substep = false;
-                last_anim_tcnt = tcnt;
+                last_anim_tick = now_tick;
             }
         }
 
