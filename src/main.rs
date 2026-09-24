@@ -23,7 +23,7 @@ mod usb;
 use buttons::{ButtonMatrix, Debouncer};
 use gpio::LedPins;
 use led::{Color, LedDriver};
-use midi::{MidiRx, send_button_events};
+use midi::{send_button_events, MidiRx};
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
@@ -73,6 +73,9 @@ static mut SNAKE_SIM: boot_anim::SnakeSim = boot_anim::SnakeSim::new();
 /// Debounced button state. In BSS (~144 bytes) to keep it off main()'s stack frame.
 static mut DEBOUNCER: Debouncer = Debouncer::new();
 
+/// Limit LED frame updates to about 300 Hz (52 × 64 µs timer ticks).
+const LED_FRAME_INTERVAL_TICKS: u16 = 52;
+
 #[atmega_hal::entry]
 fn main() -> ! {
     // -------------------------------------------------------------------------
@@ -118,7 +121,7 @@ fn main() -> ! {
     crate::delay::delay_ms(50);
 
     let led_driver = LedDriver::new();
-    let midi_rx = MidiRx::new();
+    let mut midi_rx = MidiRx::new();
 
     let initial_buttons = button_matrix.read_raw();
 
@@ -222,11 +225,12 @@ fn main() -> ! {
         }
     }
 
-    let mut dirty = true; // Whether we should redraw
+    let mut dirty = false; // Whether the LED buffer has changed since the last render
 
     // Blackout the entire grid ONCE at boot to clear residual LEDs from a previous session
     let par_buf = unsafe { &mut *core::ptr::addr_of_mut!(PAR_BUF) };
     led_driver.render_frame(par_buf, host_leds);
+    let mut last_frame_tick = dp.TC1.tcnt1().read().bits();
 
     // Boot animation: snake game :)
     #[cfg(feature = "boot-anim")]
@@ -278,7 +282,9 @@ fn main() -> ! {
         #[cfg(not(feature = "apollo"))]
         let sysex_parser_opt: Option<&mut ()> = None;
 
-        let midi = midi_rx.drain_incoming_frame(host_leds, &mut animating, sysex_parser_opt);
+        let midi = midi_rx.drain_stable_batch(host_leds, &mut animating, sysex_parser_opt, || {
+            dp.TC1.tcnt1().read().bits()
+        });
 
         // Midi dirty
         if midi.0 {
@@ -328,11 +334,14 @@ fn main() -> ! {
             }
         }
 
-        // D. Power/Brightness Scaled Frame Transmission
-        if dirty {
+        // D. Power/Brightness Scaled Frame Transmission, capped near 300 FPS.
+        // Multiple MIDI changes between slots collapse into the newest LED state.
+        let frame_tick = dp.TC1.tcnt1().read().bits();
+        if dirty && frame_tick.wrapping_sub(last_frame_tick) >= LED_FRAME_INTERVAL_TICKS {
             let par_buf = unsafe { &mut *core::ptr::addr_of_mut!(PAR_BUF) };
             led_driver.render_frame(par_buf, host_leds);
             dirty = false;
+            last_frame_tick = frame_tick;
         }
     }
 }

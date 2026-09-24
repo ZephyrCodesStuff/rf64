@@ -162,6 +162,43 @@ impl ParallelBitBuffer {
 /// - Strand 1 (PC6):        `host_leds[ 32 ..  64]`  ← handled separately
 /// - Strand 2 (PB5, bit 5): `host_leds[ 64 ..  96]`
 /// - Strand 3 (PB4, bit 4): `host_leds[ 96 .. 128]`
+/// Pack 8 simultaneous bits from 3 color channel bytes into 8 consecutive PORTB mask bytes.
+///
+/// Strand 0 maps to PB6 (0x40), Strand 2 to PB5 (0x20), Strand 3 to PB4 (0x10).
+/// Tests each bit directly (MSB first) to eliminate multi-bit shifts on AVR.
+#[inline(always)]
+fn pack_channel_into(b0: u8, b2: u8, b3: u8, dest: &mut [u8]) {
+    if (b0 | b2 | b3) == 0 {
+        dest[..8].fill(0);
+        return;
+    }
+
+    macro_rules! pack_bit {
+        ($mask:literal, $idx:literal) => {
+            let mut m = 0u8;
+            if (b0 & $mask) != 0 {
+                m |= 0x40; // PB6
+            }
+            if (b2 & $mask) != 0 {
+                m |= 0x20; // PB5
+            }
+            if (b3 & $mask) != 0 {
+                m |= 0x10; // PB4
+            }
+            dest[$idx] = m;
+        };
+    }
+
+    pack_bit!(0x80, 0);
+    pack_bit!(0x40, 1);
+    pack_bit!(0x20, 2);
+    pack_bit!(0x10, 3);
+    pack_bit!(0x08, 4);
+    pack_bit!(0x04, 5);
+    pack_bit!(0x02, 6);
+    pack_bit!(0x01, 7);
+}
+
 pub fn fill_parallel_buffer_into(
     buf: &mut ParallelBitBuffer,
     host_leds: &[Color; TOTAL_LEDS],
@@ -171,11 +208,19 @@ pub fn fill_parallel_buffer_into(
 
     for led_pos in 0..LEDS_PER_STRAND {
         #[cfg(feature = "dynamic-lighting")]
-        let (c0, c2, c3) = (
-            host_leds[led_pos].scale_brightness(scale),
-            host_leds[LEDS_PER_STRAND * 2 + led_pos].scale_brightness(scale),
-            host_leds[LEDS_PER_STRAND * 3 + led_pos].scale_brightness(scale),
-        );
+        let (c0, c2, c3) = if scale >= 256 {
+            (
+                host_leds[led_pos],
+                host_leds[LEDS_PER_STRAND * 2 + led_pos],
+                host_leds[LEDS_PER_STRAND * 3 + led_pos],
+            )
+        } else {
+            (
+                host_leds[led_pos].scale_brightness(scale),
+                host_leds[LEDS_PER_STRAND * 2 + led_pos].scale_brightness(scale),
+                host_leds[LEDS_PER_STRAND * 3 + led_pos].scale_brightness(scale),
+            )
+        };
         #[cfg(not(feature = "dynamic-lighting"))]
         let (c0, c2, c3) = (
             host_leds[led_pos],
@@ -192,25 +237,12 @@ pub fn fill_parallel_buffer_into(
         }
 
         // WS2812 wire order: G → R → B.
-        for (mut b0, mut b2, mut b3) in [(c0.g, c2.g, c3.g), (c0.r, c2.r, c3.r), (c0.b, c2.b, c3.b)]
-        {
-            if (b0 | b2 | b3) == 0 {
-                buf.masks[idx..idx + 8].fill(0);
-                idx += 8;
-                continue;
-            }
-
-            // MSB first (bit 7 down to 0).
-            // Shift MSB directly to port bits: PB6 (bit 6), PB5 (bit 5), PB4 (bit 4).
-            for _ in 0..8 {
-                let m = ((b0 & 0x80) >> 1) | ((b2 & 0x80) >> 2) | ((b3 & 0x80) >> 3);
-                buf.masks[idx] = m;
-                idx += 1;
-                b0 <<= 1;
-                b2 <<= 1;
-                b3 <<= 1;
-            }
-        }
+        pack_channel_into(c0.g, c2.g, c3.g, &mut buf.masks[idx..idx + 8]);
+        idx += 8;
+        pack_channel_into(c0.r, c2.r, c3.r, &mut buf.masks[idx..idx + 8]);
+        idx += 8;
+        pack_channel_into(c0.b, c2.b, c3.b, &mut buf.masks[idx..idx + 8]);
+        idx += 8;
     }
 }
 
@@ -393,7 +425,7 @@ impl LedDriver {
     }
 
     /// Complete frame render pipeline: computes safe scaling (if enabled), fills parallel bit buffer,
-    /// transmits parallel PORTB strands, polls USB, transmits sequential PC6 strand,
+    /// polls USB, transmits parallel PORTB strands, polls USB, transmits sequential PC6 strand,
     /// polls USB, and latches the frame.
     pub fn render_frame(&self, par_buf: &mut ParallelBitBuffer, host_leds: &[Color; TOTAL_LEDS]) {
         #[cfg(feature = "dynamic-lighting")]
@@ -403,6 +435,8 @@ impl LedDriver {
         fill_parallel_buffer_into(par_buf, host_leds, final_scale);
         #[cfg(not(feature = "dynamic-lighting"))]
         fill_parallel_buffer_into(par_buf, host_leds);
+
+        crate::usb::poll();
 
         self.send_portb_parallel(par_buf);
         crate::usb::poll();

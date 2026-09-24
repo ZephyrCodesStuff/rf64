@@ -29,8 +29,10 @@ const MIDI_CHANNEL: Channel = Channel::Channel15;
 /// NOTE: The 2017 MF64 C firmware used 74, but Launchpads always send 127, so we do the same for consistency.
 const MIDI_VELOCITY: u8 = 127;
 
-/// How many idle cycles to wait before considering an active incoming MIDI burst stable (~200us).
+/// Quiet samples used to finish a MIDI update burst (~210 µs total).
 const IDLE_CYCLES_STABLE: u8 = 20;
+const NOTE_OFF_DELAY_MS: u8 = 2;
+const NOTE_OFF_BITMAP_BYTES: usize = crate::led::TOTAL_LEDS / 8;
 
 // ── Note number → usbd-midi Note ─────────────────────────────────────────────
 
@@ -103,46 +105,114 @@ pub fn send_button_event(btn: u8, pressed: bool) {
     }
 }
 
-// ── MIDI Packet Receiver & Frame Synchronizer ─────────────────────────────────
+// ── MIDI Packet Receiver ──────────────────────────────────────────────────────
 
-/// Handles receiving incoming USB MIDI packets from the host DAW, frame boundary
-/// detection, and mapping host note/velocity commands to LED grid colors.
+/// Handles incoming USB MIDI packets and maps host note/velocity commands to LED colors.
 pub struct MidiRx {
-    _private: (),
+    note_off_stage0: [u8; NOTE_OFF_BITMAP_BYTES],
+    note_off_stage1: [u8; NOTE_OFF_BITMAP_BYTES],
+    note_off_clock_ms: u8,
+    note_off_clock_started: bool,
 }
 
 impl MidiRx {
     pub const fn new() -> Self {
-        Self { _private: () }
+        Self {
+            note_off_stage0: [0; NOTE_OFF_BITMAP_BYTES],
+            note_off_stage1: [0; NOTE_OFF_BITMAP_BYTES],
+            note_off_clock_ms: 0,
+            note_off_clock_started: false,
+        }
     }
 
-    /// Drain incoming USB MIDI packets until the stream is stable (~300us idle gap)
-    /// or a frame boundary is crossed.
+    #[inline(always)]
+    fn cancel_note_off(&mut self, led_index: usize) {
+        let byte = led_index >> 3;
+        let mask = !(1 << (led_index & 7));
+        self.note_off_stage0[byte] &= mask;
+        self.note_off_stage1[byte] &= mask;
+    }
+
+    #[inline(always)]
+    fn schedule_note_off(&mut self, led_index: usize) {
+        let byte = led_index >> 3;
+        let mask = 1 << (led_index & 7);
+        self.note_off_stage1[byte] &= !mask;
+        self.note_off_stage0[byte] |= mask;
+    }
+
+    /// Advance the pending-off bitsets by whole millisecond buckets.
+    /// Two stages preserve the OFW behavior with 32 bytes instead of one
+    /// timestamp byte per LED; the Timer1 clock is sampled at 1.024 ms steps.
+    fn advance_note_offs(
+        &mut self,
+        host_leds: &mut [crate::led::Color; crate::led::TOTAL_LEDS],
+        timer_tick: u16,
+    ) -> bool {
+        let now_ms = ((timer_tick >> 4) as u8) & 0x7F;
+        if !self.note_off_clock_started {
+            self.note_off_clock_ms = now_ms;
+            self.note_off_clock_started = true;
+            return false;
+        }
+
+        let elapsed = now_ms.wrapping_sub(self.note_off_clock_ms) & 0x7F;
+        if elapsed == 0 {
+            return false;
+        }
+        self.note_off_clock_ms = now_ms;
+
+        let mut dirty = false;
+        for byte in 0..NOTE_OFF_BITMAP_BYTES {
+            let expired = if elapsed >= NOTE_OFF_DELAY_MS {
+                let mask = self.note_off_stage0[byte] | self.note_off_stage1[byte];
+                self.note_off_stage0[byte] = 0;
+                self.note_off_stage1[byte] = 0;
+                mask
+            } else {
+                let mask = self.note_off_stage1[byte];
+                self.note_off_stage1[byte] = self.note_off_stage0[byte];
+                self.note_off_stage0[byte] = 0;
+                mask
+            };
+
+            let mut pending = expired;
+            while pending != 0 {
+                let led_index = byte * 8 + pending.trailing_zeros() as usize;
+                if host_leds[led_index] != crate::led::Color::BLACK {
+                    host_leds[led_index] = crate::led::Color::BLACK;
+                    dirty = true;
+                }
+                pending &= pending - 1;
+            }
+        }
+        dirty
+    }
+
+    /// Collect the current MIDI burst through a short idle window.
+    /// LED transmission itself remains scheduled by the fixed-rate renderer.
     ///
     /// Updates `host_leds`, cancels `animating` if host data arrives, and returns
     /// `(dirty, activity)` tuple.
-    pub fn drain_incoming_frame(
-        &self,
+    pub fn drain_stable_batch(
+        &mut self,
         host_leds: &mut [crate::led::Color; crate::led::TOTAL_LEDS],
         animating: &mut bool,
         #[cfg(feature = "apollo")] mut sysex_parser_opt: Option<&mut crate::sysex::SysExParser>,
         #[cfg(not(feature = "apollo"))] _sysex_parser_opt: Option<&mut ()>,
+        mut read_timer_tick: impl FnMut() -> u16,
     ) -> (bool, bool) {
-        let mut idle_cycles = 0;
-        let mut received_on = [0u8; 8];
-        let mut force_draw = false;
         let mut dirty = false;
         let mut activity = false;
+        let mut idle_cycles = 0u8;
         let mut has_received_data = false;
 
         loop {
             crate::usb::poll();
             let mut read_any = false;
-
             while let Some(packet) = crate::usb::read_packet() {
                 read_any = true;
                 has_received_data = true;
-
                 let status = packet[1];
                 let note = packet[2];
                 let velocity = packet[3];
@@ -155,7 +225,6 @@ impl MidiRx {
                     #[cfg(feature = "apollo")]
                     {
                         if let Some(sysex_parser) = sysex_parser_opt.as_deref_mut() {
-                            // For CIN 5, 6, 7 (ends), process and trigger redraw if needed
                             let modified = sysex_parser.process_packet(&packet, host_leds);
                             if modified {
                                 activity = true;
@@ -163,6 +232,8 @@ impl MidiRx {
                                 if *animating {
                                     *animating = false; // Stop animation if host sends data
                                     host_leds.fill(crate::led::Color::BLACK);
+                                    self.note_off_stage0.fill(0);
+                                    self.note_off_stage1.fill(0);
                                 }
                             }
                         }
@@ -179,83 +250,93 @@ impl MidiRx {
                     if *animating {
                         *animating = false; // Stop animation if host sends data
                         host_leds.fill(crate::led::Color::BLACK);
+                        self.note_off_stage0.fill(0);
+                        self.note_off_stage1.fill(0);
                         dirty = true;
                     }
                 }
 
                 // Handle MIDI Panic / All Notes Off (CC 123) sent when playback stops.
                 if is_cc && note == 123 {
+                    self.note_off_stage0.fill(0);
+                    self.note_off_stage1.fill(0);
                     for led in host_leds.iter_mut() {
-                        *led = crate::led::Color::BLACK;
+                        if *led != crate::led::Color::BLACK {
+                            *led = crate::led::Color::BLACK;
+                            dirty = true;
+                        }
                     }
-                    dirty = true;
                 } else if (is_on || is_off) && (MIDI_BASENOTE..(MIDI_BASENOTE + 64)).contains(&note)
                 {
                     // Only process LED updates on supported MIDI Fighter channels (Ch 3, 4, 5 => index 2, 3, 4)
                     let is_supported_channel = matches!(channel, 2..=4);
                     if is_supported_channel {
                         let btn = (note - MIDI_BASENOTE) as usize;
-                        let byte_idx = btn >> 3;
-                        let bit_mask = 1u8 << (btn & 7);
 
-                        // Frame boundary detection: if this button already received an ON
-                        // in this burst, and now receives an OFF, we've crossed into the next frame!
-                        if is_off && (received_on[byte_idx] & bit_mask) != 0 {
-                            crate::usb::unread_packet();
-                            force_draw = true;
-                            break;
-                        }
-                        if is_on {
-                            received_on[byte_idx] |= bit_mask;
-                        }
-
-                        let color = if is_on {
-                            crate::palette::ABLETON_COLORS.load_at(velocity as usize)
-                        } else {
-                            crate::led::Color::BLACK
-                        };
                         let base_led = btn * 2;
-                        match channel {
-                            2 => {
-                                host_leds[base_led] = color;
-                                host_leds[base_led + 1] = color;
+                        if is_on {
+                            let color = crate::palette::ABLETON_COLORS.load_at(velocity as usize);
+                            match channel {
+                                2 => {
+                                    self.cancel_note_off(base_led);
+                                    self.cancel_note_off(base_led + 1);
+                                    if host_leds[base_led] != color
+                                        || host_leds[base_led + 1] != color
+                                    {
+                                        host_leds[base_led] = color;
+                                        host_leds[base_led + 1] = color;
+                                        dirty = true;
+                                    }
+                                }
+                                3 => {
+                                    self.cancel_note_off(base_led);
+                                    if host_leds[base_led] != color {
+                                        host_leds[base_led] = color;
+                                        dirty = true;
+                                    }
+                                }
+                                4 => {
+                                    self.cancel_note_off(base_led + 1);
+                                    if host_leds[base_led + 1] != color {
+                                        host_leds[base_led + 1] = color;
+                                        dirty = true;
+                                    }
+                                }
+                                _ => {}
                             }
-                            3 => {
-                                host_leds[base_led] = color;
+                        } else {
+                            // Match OFW: defer clearing briefly so a replacement NoteOn
+                            // for the same LED can cancel a transient NoteOff.
+                            let now_tick = read_timer_tick();
+                            dirty |= self.advance_note_offs(host_leds, now_tick);
+                            match channel {
+                                2 => {
+                                    self.schedule_note_off(base_led);
+                                    self.schedule_note_off(base_led + 1);
+                                }
+                                3 => self.schedule_note_off(base_led),
+                                4 => self.schedule_note_off(base_led + 1),
+                                _ => {}
                             }
-                            4 => {
-                                host_leds[base_led + 1] = color;
-                            }
-                            _ => {}
                         }
-                        dirty = true;
                     }
                 }
-
-                if force_draw {
-                    break;
-                }
-            }
-
-            if force_draw {
-                break;
             }
 
             if read_any {
-                idle_cycles = 0; // reset idle counter if we got data
+                idle_cycles = 0;
+            } else if !has_received_data {
+                break;
             } else {
-                // If no data was pending on entry, exit immediately (0us latency for main loop)
-                if !has_received_data {
-                    break;
-                }
                 idle_cycles += 1;
                 if idle_cycles > IDLE_CYCLES_STABLE {
-                    break; // stream is stable
+                    break;
                 }
                 crate::delay::delay_us(10);
             }
         }
 
+        dirty |= self.advance_note_offs(host_leds, read_timer_tick());
         (dirty, activity)
     }
 }
