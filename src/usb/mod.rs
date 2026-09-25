@@ -63,7 +63,7 @@ pub fn init_dev(alloc_ref: &'static UsbBusAllocator<TargetUsbBus>) {
 
     unsafe {
         let p = core::ptr::addr_of_mut!(USB_DEV_STORAGE);
-        p.write(core::mem::MaybeUninit::new(dev));
+        p.write(MaybeUninit::new(dev));
     }
 }
 
@@ -86,13 +86,11 @@ pub fn init_usb_pll() {
 
 fn init_bus(usb: atmega_hal::pac::USB_DEVICE) -> &'static UsbBusAllocator<TargetUsbBus> {
     let alloc = atmega_usbd::UsbBus::new(usb);
-    let alloc_ref = unsafe {
+    unsafe {
         let p = core::ptr::addr_of_mut!(BUS_ALLOC_STORAGE);
         p.write(MaybeUninit::new(alloc));
         (*p).assume_init_ref()
-    };
-    init_dev(alloc_ref);
-    alloc_ref
+    }
 }
 
 /// Initialize the USB bus and MIDI stack into module-level static storage.
@@ -100,6 +98,7 @@ fn init_bus(usb: atmega_hal::pac::USB_DEVICE) -> &'static UsbBusAllocator<Target
 pub fn init_global(usb: atmega_hal::pac::USB_DEVICE) {
     let alloc_ref = init_bus(usb);
     midi::init_midi(alloc_ref);
+    init_dev(alloc_ref);
 
     // Poll once to trigger bus.enable() so USBE=1 before force_reset
     let usb_dev = unsafe { (*core::ptr::addr_of_mut!(USB_DEV_STORAGE)).assume_init_mut() };
@@ -118,6 +117,7 @@ pub fn init_keyboard_global(usb: atmega_hal::pac::USB_DEVICE) {
     }
     let alloc_ref = init_bus(usb);
     crate::usb::keyboard::usb::init(alloc_ref);
+    init_dev(alloc_ref);
 
     let usb_dev = unsafe { (*core::ptr::addr_of_mut!(USB_DEV_STORAGE)).assume_init_mut() };
     let keyboard = unsafe {

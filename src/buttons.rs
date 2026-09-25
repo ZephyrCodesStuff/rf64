@@ -13,6 +13,57 @@ pub struct ButtonMatrix {
     data: Pin<Input<PullUp>, PC7>,
 }
 
+/// A 64-bit button bitmask represented as an 8-byte array matching
+/// the 8 cascaded 8-bit CD4021B shift registers on the MIDI Fighter 64.
+///
+/// On an 8-bit AVR microcontroller, using `[u8; 8]` avoids register pressure,
+/// prevents stack spilling, and avoids expensive 64-bit shifting routines.
+#[derive(Copy, Clone, Default, PartialEq, Eq, Debug)]
+#[repr(transparent)]
+pub struct ButtonMask(pub [u8; 8]);
+
+impl ButtonMask {
+    pub const EMPTY: Self = Self([0u8; 8]);
+
+    #[inline(always)]
+    pub const fn new(bytes: [u8; 8]) -> Self {
+        Self(bytes)
+    }
+
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.0 == [0u8; 8]
+    }
+
+    #[inline(always)]
+    pub fn any(&self) -> bool {
+        !self.is_empty()
+    }
+
+    #[inline(always)]
+    pub const fn is_set(&self, btn: usize) -> bool {
+        if btn < 64 {
+            (self.0[btn >> 3] & (1 << (btn & 7))) != 0
+        } else {
+            false
+        }
+    }
+
+    #[inline(always)]
+    pub const fn set(&mut self, btn: usize) {
+        if btn < 64 {
+            self.0[btn >> 3] |= 1 << (btn & 7);
+        }
+    }
+
+    #[inline(always)]
+    pub const fn clear(&mut self, btn: usize) {
+        if btn < 64 {
+            self.0[btn >> 3] &= !(1 << (btn & 7));
+        }
+    }
+}
+
 impl ButtonMatrix {
     /// Initialize button matrix shift register pins using safe HAL abstractions.
     pub fn new(
@@ -34,9 +85,9 @@ impl ButtonMatrix {
 
     /// Read all 64 buttons immediately.
     ///
-    /// Returns a bitmask where bit N = 1 means button N is currently pressed.
-    pub fn read_raw(&mut self) -> u64 {
-        let mut value: u64 = 0;
+    /// Returns an 8-byte [`ButtonMask`] where byte `N / 8`, bit `N % 8` = 1 means button N is pressed.
+    pub fn read_raw(&mut self) -> ButtonMask {
+        let mut bytes = [0u8; 8];
 
         // Pulse Latch (PL) HIGH to asynchronously load parallel button inputs.
         // CD4021B requires minimum 150-250ns pulse width at 5V; 8 cycles @ 16 MHz = 500ns.
@@ -44,21 +95,25 @@ impl ButtonMatrix {
         avr_device::asm::delay_cycles(8);
         self.latch.set_low();
 
-        for i in 0..64 {
-            self.clock.set_low();
-            avr_device::asm::delay_cycles(4);
+        for byte in &mut bytes {
+            let mut new_byte = 0u8;
+            for bit_idx in 0..8 {
+                self.clock.set_low();
+                avr_device::asm::delay_cycles(4);
 
-            // Button pressed = Pin is HIGH (1) on the wire
-            if self.data.is_high() {
-                value |= 1u64 << i;
+                // Button pressed = Pin is HIGH (1) on the wire
+                if self.data.is_high() {
+                    new_byte |= 1u8 << bit_idx;
+                }
+
+                avr_device::asm::delay_cycles(4);
+                self.clock.set_high(); // shifts next bit out on CD4021B
+                avr_device::asm::delay_cycles(4);
             }
-
-            avr_device::asm::delay_cycles(4);
-            self.clock.set_high(); // shifts next bit out on CD4021B
-            avr_device::asm::delay_cycles(4);
+            *byte = new_byte;
         }
 
-        value
+        ButtonMask(bytes)
     }
 }
 
@@ -73,9 +128,9 @@ pub const DEBOUNCE_TICKS: u16 = 160;
 /// by a fixed time-based lockout window measured against a monotonic timer tick.
 pub struct Debouncer {
     /// Debounced logical state (bit N = 1 if button N is pressed).
-    pub state: u64,
+    pub state: ButtonMask,
     /// Bitmask indicating which buttons are currently locked out in debounce cooldown.
-    lockout_mask: u64,
+    lockout_mask: ButtonMask,
     /// Tick when each button began its lockout window.
     last_edge_tick: [u16; 64],
 }
@@ -83,8 +138,8 @@ pub struct Debouncer {
 impl Debouncer {
     pub const fn new() -> Self {
         Self {
-            state: 0,
-            lockout_mask: 0,
+            state: ButtonMask::EMPTY,
+            lockout_mask: ButtonMask::EMPTY,
             last_edge_tick: [0; 64],
         }
     }
@@ -93,26 +148,19 @@ impl Debouncer {
     ///
     /// Returns `(pressed_edges, released_edges)` bitmasks where bit N = 1 indicates
     /// button N transitioned on this cycle.
-    pub fn update(&mut self, raw: u64, now: u16) -> (u64, u64) {
-        let mut pressed_edges = 0u64;
-        let mut released_edges = 0u64;
+    pub fn update(&mut self, raw: ButtonMask, now: u16) -> (ButtonMask, ButtonMask) {
+        let mut pressed_edges = ButtonMask::EMPTY;
+        let mut released_edges = ButtonMask::EMPTY;
 
         // Fast path: if no buttons are in lockout and raw matches debounced state, no work needed.
-        if self.lockout_mask == 0 && raw == self.state {
-            return (0, 0);
+        if self.lockout_mask.is_empty() && raw == self.state {
+            return (pressed_edges, released_edges);
         }
 
-        let raw_bytes = raw.to_le_bytes();
-        let state_bytes = self.state.to_le_bytes();
-        let lockout_bytes = self.lockout_mask.to_le_bytes();
-
-        let mut new_state = self.state;
-        let mut new_lockout = self.lockout_mask;
-
         for byte_idx in 0..8 {
-            let r_byte = raw_bytes[byte_idx];
-            let s_byte = state_bytes[byte_idx];
-            let l_byte = lockout_bytes[byte_idx];
+            let r_byte = raw.0[byte_idx];
+            let s_byte = self.state.0[byte_idx];
+            let l_byte = self.lockout_mask.0[byte_idx];
 
             // If no active lockouts in this byte and raw matches state, skip this group of 8 buttons
             if l_byte == 0 && r_byte == s_byte {
@@ -121,40 +169,37 @@ impl Debouncer {
 
             for bit_idx in 0..8 {
                 let btn = (byte_idx << 3) | bit_idx;
-                let mask = 1u64 << btn;
+                let bit_mask = 1u8 << bit_idx;
 
                 // Check if button is currently in lockout window
-                if (new_lockout & mask) != 0 {
+                if (self.lockout_mask.0[byte_idx] & bit_mask) != 0 {
                     if now.wrapping_sub(self.last_edge_tick[btn]) < DEBOUNCE_TICKS {
                         // Still within lockout window: ignore raw changes
                         continue;
                     } else {
                         // Lockout period has elapsed: clear lock
-                        new_lockout &= !mask;
+                        self.lockout_mask.0[byte_idx] &= !bit_mask;
                     }
                 }
 
-                let is_raw_pressed = (r_byte & (1 << bit_idx)) != 0;
-                let was_confirmed = (s_byte & (1 << bit_idx)) != 0;
+                let is_raw_pressed = (r_byte & bit_mask) != 0;
+                let was_confirmed = (s_byte & bit_mask) != 0;
 
                 if is_raw_pressed != was_confirmed {
                     // Start lockout cooldown
                     self.last_edge_tick[btn] = now;
-                    new_lockout |= mask;
+                    self.lockout_mask.0[byte_idx] |= bit_mask;
 
                     if is_raw_pressed {
-                        new_state |= mask;
-                        pressed_edges |= mask;
+                        self.state.0[byte_idx] |= bit_mask;
+                        pressed_edges.0[byte_idx] |= bit_mask;
                     } else {
-                        new_state &= !mask;
-                        released_edges |= mask;
+                        self.state.0[byte_idx] &= !bit_mask;
+                        released_edges.0[byte_idx] |= bit_mask;
                     }
                 }
             }
         }
-
-        self.state = new_state;
-        self.lockout_mask = new_lockout;
 
         (pressed_edges, released_edges)
     }
@@ -174,14 +219,14 @@ pub const fn cell_to_btn(row: u8, col: u8) -> usize {
 
 /// Iterate over all set bit indices (0..63) in a 64-bit button bitmask.
 ///
-/// Processes bytes in little-endian order using trailing-zero counting (Kernighan bit-twiddling)
-/// for optimal 8-bit AVR execution speed.
+/// Processes bytes directly in native 8-bit little-endian order using trailing-zero counting
+/// (Kernighan bit-twiddling) for optimal 8-bit AVR execution speed.
 #[inline(always)]
-pub fn for_each_button(mask: u64, mut f: impl FnMut(u8)) {
-    if mask == 0 {
+pub fn for_each_button(mask: ButtonMask, mut f: impl FnMut(u8)) {
+    if mask.is_empty() {
         return;
     }
-    for (byte_idx, &byte) in mask.to_le_bytes().iter().enumerate() {
+    for (byte_idx, &byte) in mask.0.iter().enumerate() {
         let mut b = byte;
         while b != 0 {
             let bit = b.trailing_zeros() as u8;

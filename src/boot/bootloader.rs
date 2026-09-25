@@ -18,8 +18,9 @@ const BOOTLOADER_WORD_ADDR: u16 = 0x7000 >> 1;
 #[unsafe(link_section = ".noinit")]
 static mut BOOT_KEY: u32 = 0;
 
-/// Check at startup whether a bootloader jump was requested.
-/// Call this as the very first thing in `main()`, before any hardware init.
+/// Check at startup whether a bootloader jump was requested (and jump if so).
+/// 
+/// You should call this before any other initialization.
 #[inline(always)]
 pub fn check_bootloader_requested(p: &Peripherals) {
     let mcusr = p.CPU.mcusr().read();
@@ -103,6 +104,6 @@ pub fn request_bootloader(p: &Peripherals) -> ! {
 }
 
 /// Returns `true` if button 0 is held at startup (used to trigger bootloader entry).
-pub const fn bootloader_combo_held(key_state: u64) -> bool {
-    key_state & 0b1 == 0b1
+pub const fn bootloader_combo_held(key_state: crate::buttons::ButtonMask) -> bool {
+    (key_state.0[0] & 0b1) != 0
 }

@@ -406,3 +406,92 @@ impl SnakeSim {
         }
     }
 }
+
+/// Controller for the idle timeout and snake boot animation pacing.
+pub struct IdleAnimation {
+    pub sim: SnakeSim,
+    pub animating: bool,
+    last_second_tick: u16,
+    last_anim_tick: u16,
+    anim_substep: bool,
+    seconds_idle: u16,
+}
+
+impl IdleAnimation {
+    pub const fn new() -> Self {
+        Self {
+            sim: SnakeSim::new(),
+            animating: true,
+            last_second_tick: 0,
+            last_anim_tick: 0,
+            anim_substep: false,
+            seconds_idle: 0,
+        }
+    }
+
+    /// Seed the random generator for apple placements.
+    pub fn seed(&mut self, seed: u16) {
+        self.sim.seed(seed);
+    }
+
+    /// Reset idle timeout and stop animation if running when user activity occurs.
+    /// Returns `true` if LEDs need to be redrawn (blackout).
+    pub fn notify_activity(&mut self, host_leds: &mut [Color; TOTAL_LEDS]) -> bool {
+        self.seconds_idle = 0;
+        if self.animating {
+            self.animating = false;
+            host_leds.fill(Color::BLACK);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Advance the idle timer and snake animation state machine.
+    ///
+    /// Hardware-paced via Timer1 (15,625 Hz, 64 µs per tick):
+    /// - Monitors 256s idle timeout to wake up the snake
+    /// - 1172 ticks (~75 ms) -> half_step: preview entry/exit LEDs
+    /// - 2344 ticks (~150 ms) -> step: commit move, light new head
+    ///
+    /// Returns `true` if the animation modified `host_leds` and requires an LED redraw.
+    pub fn tick(&mut self, now_tick: u16, host_leds: &mut [Color; TOTAL_LEDS]) -> bool {
+        let mut dirty = false;
+
+        // 1. Monitor 1-second hardware timer tick for 256s idle timeout
+        let elapsed_sec = now_tick.wrapping_sub(self.last_second_tick);
+        if elapsed_sec >= 15625 {
+            self.last_second_tick = self.last_second_tick.wrapping_add(15625);
+            self.seconds_idle = self.seconds_idle.saturating_add(1);
+
+            if self.seconds_idle >= 256 && !self.animating {
+                self.animating = true;
+                self.sim.reset();
+                self.seconds_idle = 0;
+                self.last_anim_tick = now_tick;
+                self.anim_substep = false;
+                dirty = true;
+            }
+        }
+
+        // 2. Pace animation steps
+        if self.animating {
+            let elapsed = now_tick.wrapping_sub(self.last_anim_tick);
+
+            if !self.anim_substep && elapsed >= 1172 {
+                self.sim.half_step();
+                self.sim.fill_leds(host_leds);
+                self.anim_substep = true;
+                dirty = true;
+            } else if self.anim_substep && elapsed >= 2344 {
+                self.sim.step();
+                self.sim.fill_leds(host_leds);
+                self.anim_substep = false;
+                self.last_anim_tick = now_tick;
+                dirty = true;
+            }
+        }
+
+        dirty
+    }
+}

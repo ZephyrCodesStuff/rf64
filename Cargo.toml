@@ -7,7 +7,7 @@ edition = "2024"
 authors = ["zeph <https://github.com/ZephyrCodesStuff>"]
 repository = "https://github.com/ZephyrCodesStuff/rf64"
 keywords = ["embedded", "avr", "midi", "usb", "atmega32u4"]
-categories = ["embedded", "usb", "midi"]
+categories = ["embedded", "multimedia::audio"]
 
 [features]
 default = ["boot-anim", "apollo", "dynamic-lighting"]

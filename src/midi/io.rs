@@ -48,7 +48,7 @@ fn note_from_u8(n: u8) -> Note {
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Send MIDI NoteOn/NoteOff for button state transitions.
-pub fn send_button_events(pressed_mask: u64, released_mask: u64) {
+pub fn send_button_events(pressed_mask: crate::buttons::ButtonMask, released_mask: crate::buttons::ButtonMask) {
     crate::buttons::for_each_button(pressed_mask, |btn| send_button_event(btn, true));
     crate::buttons::for_each_button(released_mask, |btn| send_button_event(btn, false));
 }

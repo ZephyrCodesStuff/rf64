@@ -71,7 +71,7 @@ impl<'a, B: UsbBus> MidiClass<'a, B> {
         } else {
             self.read_len = 0;
             self.read_pos = 0;
-            Err(usb_device::UsbError::WouldBlock)
+            Err(UsbError::WouldBlock)
         }
     }
 }

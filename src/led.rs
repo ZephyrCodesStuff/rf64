@@ -348,185 +348,174 @@ pub unsafe fn send_byte_pc6(byte: u8) {
     unsafe { send_byte_pin::<PORTC_IO, 6>(byte) };
 }
 
-// ── LED Driver ────────────────────────────────────────────────────────────────
+// ── LED Transmission Functions ───────────────────────────────────────────────
 
-/// Drives WS2812 LED strands on the MIDI Fighter 64 hardware.
-pub struct LedDriver {
-    _private: (),
+/// Transmit strands 0 (PB6), 2 (PB5), and 3 (PB4) simultaneously in ~0.91 ms.
+///
+/// Reads from a pre-computed [`ParallelBitBuffer`] produced by
+/// [`fill_parallel_buffer_into`]. Three PORTB data lines are driven by a single
+/// `out PORTB, mask` per phase — one pass replaces three sequential strand calls.
+///
+/// ## Per-bit timing at 16 MHz (1 cycle = 62.5 ns)
+///
+/// ```text
+///  out PORTB, 0x70   ; 1 cy:  PB6 | PB5 | PB4 = HIGH
+///  nop               ; 1 cy:  │
+///  ld mid, Z+        ; 2 cy:  ├── T0H window: 4 cy = 250 ns ──┐
+///  out PORTB, mid    ; 1 cy:  0-bit pins go LOW               │
+///  nop × 4           ; 4 cy:  │                               │
+///  out PORTB, 0x00   ; 1 cy:  all pins go LOW    T1H: 9 cy = 562 ns
+///  nop × 5           ; 5 cy:  │
+///  sbiw cnt, 1       ; 2 cy:  ├── LOW hold ───────────────────┘
+///  brne loop         ; 2 cy:  │  (T0L ≈ 14 cy = 875 ns, T1L ≈ 9 cy = 562 ns)
+/// ```
+///
+/// The `ld Z+` load is placed inside the T0H window so it serves as both
+/// a data fetch and a timing delay — zero wasted cycles.
+pub fn send_portb_parallel(buf: &ParallelBitBuffer) {
+    // Safety: buf.masks is a valid, initialised 768-byte array.
+    // Z (r31:r30) is used as the auto-incrementing data pointer.
+    // sbiw operates on the reg_iw pair chosen by the compiler for `cnt`.
+    // options(nostack): we touch SRAM via `ld Z+` but not the stack.
+    let z_addr = buf.masks.as_ptr() as usize;
+    unsafe {
+        asm!(
+            "99:",
+            "out 0x05, {high}",          // 1 cy: ALL HIGH  (PB6 | PB5 | PB4)
+            "nop",                        // 1 cy: T0H pad
+            "ld {mid}, Z+",              // 2 cy: load mid-mask, advance Z  ← T0H pad
+            "out 0x05, {mid}",           // 1 cy: 0-bit pins LOW  → T0H = 4 cy = 250 ns
+            "nop",                        // 1 cy: T1H pad
+            "nop",                        // 1 cy
+            "nop",                        // 1 cy
+            "nop",                        // 1 cy
+            "out 0x05, {zero}",          // 1 cy: ALL LOW         → T1H = 9 cy = 562 ns
+            "nop",                        // 1 cy: LOW hold
+            "nop",                        // 1 cy
+            "nop",                        // 1 cy
+            "nop",                        // 1 cy
+            "nop",                        // 1 cy
+            "sbiw {cnt}, 1",             // 2 cy: decrement 16-bit loop counter
+            "brne 99b",                  // 2 cy (taken) / 1 cy (not taken)
+            high = in(reg) 0x70u8,       // PB6 | PB5 | PB4 HIGH mask (constant)
+            zero = in(reg) 0x00u8,       // ALL-LOW mask (constant)
+            mid  = out(reg) _,           // scratch register for loaded mask
+            cnt  = inout(reg_iw) 768u16 => _, // 16-bit loop counter (sbiw-compatible pair)
+            inout("Z") z_addr => _,      // Z = data pointer; modified by ld Z+
+            options(nostack),
+        );
+    }
 }
 
-impl LedDriver {
-    pub const fn new() -> Self {
-        Self { _private: () }
-    }
+/// Transmit strand 1 (LEDs 32..63) on PC6. ~0.96 ms. Call `poll()` after.
+///
+/// Accepts a slice of exactly [`LEDS_PER_STRAND`] (32) colours.
+/// Pass `&host_leds[LEDS_PER_STRAND..LEDS_PER_STRAND * 2]`.
+pub fn send_strand1(leds: &[Color], #[cfg(feature = "dynamic-lighting")] scale: u16) {
+    unsafe {
+        for color in leds {
+            #[cfg(feature = "dynamic-lighting")]
+            let color = color.scale_brightness(scale);
+            #[cfg(not(feature = "dynamic-lighting"))]
+            let color = *color;
 
-    /// Transmit strands 0 (PB6), 2 (PB5), and 3 (PB4) simultaneously in ~0.91 ms.
-    ///
-    /// Reads from a pre-computed [`ParallelBitBuffer`] produced by
-    /// [`fill_parallel_buffer_into`]. Three PORTB data lines are driven by a single
-    /// `out PORTB, mask` per phase — one pass replaces three sequential strand calls.
-    ///
-    /// ## Per-bit timing at 16 MHz (1 cycle = 62.5 ns)
-    ///
-    /// ```text
-    ///  out PORTB, 0x70   ; 1 cy:  PB6 | PB5 | PB4 = HIGH
-    ///  nop               ; 1 cy:  │
-    ///  ld mid, Z+        ; 2 cy:  ├── T0H window: 4 cy = 250 ns ──┐
-    ///  out PORTB, mid    ; 1 cy:  0-bit pins go LOW               │
-    ///  nop × 4           ; 4 cy:  │                               │
-    ///  out PORTB, 0x00   ; 1 cy:  all pins go LOW    T1H: 9 cy = 562 ns
-    ///  nop × 5           ; 5 cy:  │
-    ///  sbiw cnt, 1       ; 2 cy:  ├── LOW hold ───────────────────┘
-    ///  brne loop         ; 2 cy:  │  (T0L ≈ 14 cy = 875 ns, T1L ≈ 9 cy = 562 ns)
-    /// ```
-    ///
-    /// The `ld Z+` load is placed inside the T0H window so it serves as both
-    /// a data fetch and a timing delay — zero wasted cycles.
-    pub fn send_portb_parallel(&self, buf: &ParallelBitBuffer) {
-        // Safety: buf.masks is a valid, initialised 768-byte array.
-        // Z (r31:r30) is used as the auto-incrementing data pointer.
-        // sbiw operates on the reg_iw pair chosen by the compiler for `cnt`.
-        // options(nostack): we touch SRAM via `ld Z+` but not the stack.
-        let z_addr = buf.masks.as_ptr() as usize;
-        unsafe {
-            asm!(
-                "99:",
-                "out 0x05, {high}",          // 1 cy: ALL HIGH  (PB6 | PB5 | PB4)
-                "nop",                        // 1 cy: T0H pad
-                "ld {mid}, Z+",              // 2 cy: load mid-mask, advance Z  ← T0H pad
-                "out 0x05, {mid}",           // 1 cy: 0-bit pins LOW  → T0H = 4 cy = 250 ns
-                "nop",                        // 1 cy: T1H pad
-                "nop",                        // 1 cy
-                "nop",                        // 1 cy
-                "nop",                        // 1 cy
-                "out 0x05, {zero}",          // 1 cy: ALL LOW         → T1H = 9 cy = 562 ns
-                "nop",                        // 1 cy: LOW hold
-                "nop",                        // 1 cy
-                "nop",                        // 1 cy
-                "nop",                        // 1 cy
-                "nop",                        // 1 cy
-                "sbiw {cnt}, 1",             // 2 cy: decrement 16-bit loop counter
-                "brne 99b",                  // 2 cy (taken) / 1 cy (not taken)
-                high = in(reg) 0x70u8,       // PB6 | PB5 | PB4 HIGH mask (constant)
-                zero = in(reg) 0x00u8,       // ALL-LOW mask (constant)
-                mid  = out(reg) _,           // scratch register for loaded mask
-                cnt  = inout(reg_iw) 768u16 => _, // 16-bit loop counter (sbiw-compatible pair)
-                inout("Z") z_addr => _,      // Z = data pointer; modified by ld Z+
-                options(nostack),
-            );
+            send_byte_pc6(color.g);
+            send_byte_pc6(color.r);
+            send_byte_pc6(color.b);
         }
     }
+}
 
-    /// Transmit strand 1 (LEDs 32..63) on PC6. ~0.96 ms. Call `poll()` after.
-    ///
-    /// Accepts a slice of exactly [`LEDS_PER_STRAND`] (32) colours.
-    /// Pass `&host_leds[LEDS_PER_STRAND..LEDS_PER_STRAND * 2]`.
-    pub fn send_strand1(&self, leds: &[Color], #[cfg(feature = "dynamic-lighting")] scale: u16) {
-        unsafe {
-            for color in leds {
-                #[cfg(feature = "dynamic-lighting")]
-                let color = color.scale_brightness(scale);
-                #[cfg(not(feature = "dynamic-lighting"))]
-                let color = *color;
+/// Latch the frame by holding all lines LOW for >50 µs.
+/// Call once after all strands are sent.
+pub fn latch_frame() {
+    delay_us(80);
+}
 
-                send_byte_pc6(color.g);
-                send_byte_pc6(color.r);
-                send_byte_pc6(color.b);
+/// Complete frame render pipeline: computes safe scaling (if enabled), fills parallel bit buffer,
+/// polls USB, transmits parallel PORTB strands, polls USB, transmits sequential PC6 strand,
+/// polls USB, and latches the frame.
+pub fn render_frame(par_buf: &mut ParallelBitBuffer, host_leds: &[Color; TOTAL_LEDS]) {
+    #[cfg(feature = "dynamic-lighting")]
+    let final_scale = compute_safe_scale(host_leds);
+
+    #[cfg(feature = "dynamic-lighting")]
+    fill_parallel_buffer_into(par_buf, host_leds, final_scale);
+    #[cfg(not(feature = "dynamic-lighting"))]
+    fill_parallel_buffer_into(par_buf, host_leds);
+
+    crate::usb::poll();
+
+    send_portb_parallel(par_buf);
+    crate::usb::poll();
+
+    #[cfg(feature = "dynamic-lighting")]
+    send_strand1(
+        &host_leds[LEDS_PER_STRAND..LEDS_PER_STRAND * 2],
+        final_scale,
+    );
+    #[cfg(not(feature = "dynamic-lighting"))]
+    send_strand1(&host_leds[LEDS_PER_STRAND..LEDS_PER_STRAND * 2]);
+
+    crate::usb::poll();
+
+    latch_frame();
+}
+
+/// Send a fixed checkerboard pattern of `color` (on even buttons) and BLACK (on odd buttons).
+///
+/// This is used for internal states of the firmware:
+/// - Bootloader entry: ORANGE checkerboard
+/// - Panic handler: RED checkerboard
+pub fn send_checkerboard_direct(par_buf: &mut ParallelBitBuffer, color: Color) {
+    // Pre-compute scaled colour bytes (GRB wire order for WS2812).
+    // For a 32-LED checkerboard at 16 ON buttons × 2 LEDs × R=255:
+    // total = 16 * 2 * 255 = 8160 units. Apply the same power cap as normal.
+    //
+    // Simple fixed scale: 32 ON buttons × 2 LEDs × (r+g+b) vs SAFE_MAX_COLOR_SUM.
+    let num_on_leds: u32 = 64; // 32 buttons ON × 2 LEDs each across 64 buttons total
+    let per_led_sum = color.r as u32 + color.g as u32 + color.b as u32;
+    let total_sum = per_led_sum * num_on_leds;
+    let scale: u16 = compute_power_scale(total_sum);
+    let c = color.scale_brightness(scale);
+
+    // Fill par_buf for strands 0, 2, 3 simultaneously (PORTB parallel).
+    let mut idx = 0usize;
+    for led_pos in 0..LEDS_PER_STRAND {
+        let btn_in_strand = led_pos / 2; // 0..15
+        let is_on = ((btn_in_strand >> 3) + (btn_in_strand & 7)) & 1 == 0;
+
+        let (g, r, b) = if is_on {
+            (c.g, c.r, c.b)
+        } else {
+            (0u8, 0u8, 0u8)
+        };
+
+        #[allow(
+            clippy::tuple_array_conversions,
+            reason = "unfolding leads to uglier code"
+        )]
+        for val in [g, r, b] {
+            for bit in (0..8u8).rev() {
+                par_buf.masks[idx] = if (val & (1 << bit)) != 0 { 0x70 } else { 0x00 };
+                idx += 1;
             }
         }
     }
+    send_portb_parallel(par_buf);
 
-    /// Latch the frame by holding all lines LOW for >50 µs.
-    /// Call once after all strands are sent.
-    pub fn latch_frame(&self) {
-        delay_us(80);
-    }
-
-    /// Complete frame render pipeline: computes safe scaling (if enabled), fills parallel bit buffer,
-    /// polls USB, transmits parallel PORTB strands, polls USB, transmits sequential PC6 strand,
-    /// polls USB, and latches the frame.
-    pub fn render_frame(&self, par_buf: &mut ParallelBitBuffer, host_leds: &[Color; TOTAL_LEDS]) {
-        #[cfg(feature = "dynamic-lighting")]
-        let final_scale = compute_safe_scale(host_leds);
-
-        #[cfg(feature = "dynamic-lighting")]
-        fill_parallel_buffer_into(par_buf, host_leds, final_scale);
-        #[cfg(not(feature = "dynamic-lighting"))]
-        fill_parallel_buffer_into(par_buf, host_leds);
-
-        crate::usb::poll();
-
-        self.send_portb_parallel(par_buf);
-        crate::usb::poll();
-
-        #[cfg(feature = "dynamic-lighting")]
-        self.send_strand1(
-            &host_leds[LEDS_PER_STRAND..LEDS_PER_STRAND * 2],
-            final_scale,
-        );
-        #[cfg(not(feature = "dynamic-lighting"))]
-        self.send_strand1(&host_leds[LEDS_PER_STRAND..LEDS_PER_STRAND * 2]);
-
-        crate::usb::poll();
-
-        self.latch_frame();
-    }
-
-    /// Send a fixed checkerboard pattern of `color` (on even buttons) and BLACK (on odd buttons).
-    ///
-    /// This is used for internal states of the firmware:
-    /// - Bootloader entry: ORANGE checkerboard
-    /// - Panic handler: RED checkerboard
-    pub fn send_checkerboard_direct(&self, par_buf: &mut ParallelBitBuffer, color: Color) {
-        // Pre-compute scaled colour bytes (GRB wire order for WS2812).
-        // For a 32-LED checkerboard at 16 ON buttons × 2 LEDs × R=255:
-        // total = 16 * 2 * 255 = 8160 units. Apply the same power cap as normal.
-        //
-        // Simple fixed scale: 32 ON buttons × 2 LEDs × (r+g+b) vs SAFE_MAX_COLOR_SUM.
-        let num_on_leds: u32 = 64; // 32 buttons ON × 2 LEDs each across 64 buttons total
-        let per_led_sum = color.r as u32 + color.g as u32 + color.b as u32;
-        let total_sum = per_led_sum * num_on_leds;
-        let scale: u16 = compute_power_scale(total_sum);
-        let c = color.scale_brightness(scale);
-
-        // Fill par_buf for strands 0, 2, 3 simultaneously (PORTB parallel).
-        let mut idx = 0usize;
+    // Send strand 1 (PC6) sequentially
+    unsafe {
         for led_pos in 0..LEDS_PER_STRAND {
-            let btn_in_strand = led_pos / 2; // 0..15
+            let btn_in_strand = led_pos / 2;
             let is_on = ((btn_in_strand >> 3) + (btn_in_strand & 7)) & 1 == 0;
-
-            let (g, r, b) = if is_on {
-                (c.g, c.r, c.b)
-            } else {
-                (0u8, 0u8, 0u8)
-            };
-
-            #[allow(
-                clippy::tuple_array_conversions,
-                reason = "unfolding leads to uglier code"
-            )]
-            for val in [g, r, b] {
-                for bit in (0..8u8).rev() {
-                    par_buf.masks[idx] = if (val & (1 << bit)) != 0 { 0x70 } else { 0x00 };
-                    idx += 1;
-                }
-            }
+            let (g, r, b) = if is_on { (c.g, c.r, c.b) } else { (0, 0, 0) };
+            send_byte_pc6(g);
+            send_byte_pc6(r);
+            send_byte_pc6(b);
         }
-        self.send_portb_parallel(par_buf);
-
-        // Send strand 1 (PC6) sequentially
-        unsafe {
-            for led_pos in 0..LEDS_PER_STRAND {
-                let btn_in_strand = led_pos / 2;
-                let is_on = ((btn_in_strand >> 3) + (btn_in_strand & 7)) & 1 == 0;
-                let (g, r, b) = if is_on { (c.g, c.r, c.b) } else { (0, 0, 0) };
-                send_byte_pc6(g);
-                send_byte_pc6(r);
-                send_byte_pc6(b);
-            }
-        }
-
-        // Display the frame
-        self.latch_frame();
     }
+
+    // Display the frame
+    latch_frame();
 }

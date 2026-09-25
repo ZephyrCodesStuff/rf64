@@ -144,7 +144,7 @@ pub fn send_report(report: &[u8; 8]) -> usb_device::Result<usize> {
 /// Processes active button states and generates an 8-byte USB HID Boot Keyboard report.
 /// Separates modifier keys (0xE0..=0xE7) into byte 0 and regular keycodes into bytes 2..7.
 /// Returns the report and a boolean indicating if the FN key is held.
-pub fn build_keyboard_report(pressed_keys: u64) -> ([u8; 8], bool) {
+pub fn build_keyboard_report(pressed_keys: crate::buttons::ButtonMask) -> ([u8; 8], bool) {
     let mut report = [0u8; 8];
     let mut modifier = 0u8;
     let mut count = 0;
