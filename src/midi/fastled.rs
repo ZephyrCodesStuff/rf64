@@ -3,6 +3,12 @@
 //! Provides the decompression algorithms used by Apollo Studio and other
 //! high-performance host software to update the entire grid with minimal USB overhead.
 
+/*
+todo
+
+figure out if we can support both actual fastrgb and the shittier mf64-exclusive implementation at once
+*/
+
 use crate::led::{Color, TOTAL_LEDS};
 
 const BUTTON_ID_FLAGS: u8 = 0x3F;
@@ -20,18 +26,8 @@ pub fn fastrgb_clear(host_leds: &mut [Color; TOTAL_LEDS]) {
 const fn fastrgb_set_unsafe(p: u8, r: u8, g: u8, b: u8, host_leds: &mut [Color; TOTAL_LEDS]) {
     // Only map valid pad indices (0-63)
     if p < 64 {
-        let r8 = if r == 0 { 0 } else { (r << 2) | (r >> 4) };
-        let g8 = if g == 0 { 0 } else { (g << 2) | (g >> 4) };
-        let b8 = if b == 0 { 0 } else { (b << 2) | (b >> 4) };
-
-        let c = Color::new(r8, g8, b8);
-
-        // Two LEDs per button. Mapping from midi.rs channel handling.
-        let base_led = (p as usize) * 2;
-        if base_led + 1 < TOTAL_LEDS {
-            host_leds[base_led] = c;
-            host_leds[base_led + 1] = c;
-        }
+        let c = Color::from_rgb6(r, g, b);
+        crate::led::set_button_color(host_leds, p as usize, c);
     }
 }
 

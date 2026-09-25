@@ -11,7 +11,6 @@
 use crate::delay::delay_us;
 use core::arch::asm;
 
-#[allow(dead_code)]
 pub const NUM_BUTTONS: usize = 64;
 pub const LEDS_PER_BUTTON: usize = 2;
 pub const BUTTONS_PER_STRAND: usize = 16;
@@ -63,6 +62,15 @@ impl Color {
         Self { r, g, b }
     }
 
+    /// Construct a Color from 6-bit (0–63) RGB components using fast bit-replication scaling (maps 0..=63 to 0..=255 without division).
+    #[inline(always)]
+    pub const fn from_rgb6(r: u8, g: u8, b: u8) -> Self {
+        let r8 = (r << 2) | (r >> 4);
+        let g8 = (g << 2) | (g >> 4);
+        let b8 = (b << 2) | (b >> 4);
+        Self::new(r8, g8, b8)
+    }
+
     /// Dynamically scale brightness by a fraction (scale / 256).
     /// If an original color channel was > 0, we ensure it never rounds down to 0,
     /// so that very dim colors aren't entirely extinguished by scaling.
@@ -80,6 +88,15 @@ impl Color {
             g: if self.g > 0 && sg == 0 { 1 } else { sg as u8 },
             b: if self.b > 0 && sb == 0 { 1 } else { sb as u8 },
         }
+    }
+}
+
+/// Set both WS2812 LEDs for a physical button (0..63) to `color`.
+#[inline(always)]
+pub const fn set_button_color(host_leds: &mut [Color; TOTAL_LEDS], btn: usize, color: Color) {
+    if btn < NUM_BUTTONS {
+        host_leds[btn * 2] = color;
+        host_leds[btn * 2 + 1] = color;
     }
 }
 

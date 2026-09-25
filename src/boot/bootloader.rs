@@ -98,7 +98,7 @@ pub fn request_bootloader(p: &Peripherals) -> ! {
         });
     }
 
-    #[allow(clippy::empty_loop, reason = "Wait for WDT to reset the MCU")]
+    #[allow(clippy::empty_loop, reason = "wait for WDT to reset the MCU")]
     loop {} // Spin until WDT fires
 }
 

@@ -159,3 +159,34 @@ impl Debouncer {
         (pressed_edges, released_edges)
     }
 }
+
+/// Map spatial grid cell `(row, col)` (0..7, 0..7) to physical button index `0..63`.
+///
+/// Layout uses Ableton drum rack format:
+/// - Left 4 columns (cols 0..3) map to buttons 0..31
+/// - Right 4 columns (cols 4..7) map to buttons 32..63
+#[inline(always)]
+pub const fn cell_to_btn(row: u8, col: u8) -> usize {
+    let half_offset = if col >= 4 { 32 } else { 0 };
+    let c = (col & 3) as usize;
+    half_offset + (row as usize * 4) + c
+}
+
+/// Iterate over all set bit indices (0..63) in a 64-bit button bitmask.
+///
+/// Processes bytes in little-endian order using trailing-zero counting (Kernighan bit-twiddling)
+/// for optimal 8-bit AVR execution speed.
+#[inline(always)]
+pub fn for_each_button(mask: u64, mut f: impl FnMut(u8)) {
+    if mask == 0 {
+        return;
+    }
+    for (byte_idx, &byte) in mask.to_le_bytes().iter().enumerate() {
+        let mut b = byte;
+        while b != 0 {
+            let bit = b.trailing_zeros() as u8;
+            f(((byte_idx as u8) << 3) | bit);
+            b &= b - 1;
+        }
+    }
+}

@@ -1,22 +1,11 @@
 //! SysEx Parser for high-speed commands and device identification.
 
-use crate::fastled;
 use crate::led::{Color, TOTAL_LEDS};
+use crate::midi::fastled;
+#[cfg(feature = "mystrix")]
+use crate::midi::mystrix::MystrixState;
 
 pub const MIDI_MAX_SYSEX: usize = 192;
-
-// ── Mystrix sub-state (only compiled in when the feature is enabled) ──────────
-
-#[cfg(feature = "mystrix")]
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum MystrixState {
-    /// Received F0 00 02 — waiting for 03 4D 58 (manufacturer ID)
-    CheckManufacturer,
-    /// Received 03 4D 58 — waiting for 5E (command byte)
-    Header,
-    /// Streaming 4-byte [idx, r, g, b] LED chunks
-    Data,
-}
 
 // ── Main parser state ─────────────────────────────────────────────────────────
 
@@ -259,7 +248,7 @@ impl SysExParser {
                             0xF7,
                         ],
                     };
-                    self.send_sysex(&response);
+                    crate::usb::midi::send_sysex(&response);
                 }
             }
             State::List6F => {
@@ -272,78 +261,9 @@ impl SysExParser {
             }
             #[cfg(feature = "mystrix")]
             State::Mystrix(MystrixState::Data) => {
-                for chunk in payload.as_chunks::<4>().0 {
-                    let idx = chunk[0] as usize;
-                    let r6 = (chunk[1] & 0x3F) as u16;
-                    let g6 = (chunk[2] & 0x3F) as u16;
-                    let b6 = (chunk[3] & 0x3F) as u16;
-
-                    let r = ((r6 * 255 + 31) / 63) as u8;
-                    let g = ((g6 * 255 + 31) / 63) as u8;
-                    let b = ((b6 * 255 + 31) / 63) as u8;
-
-                    // Mystrix XY index (11..88) → MF64 physical button (0..63)
-                    let btn_opt = if (11..=88).contains(&idx) {
-                        let x = (idx % 10) as u8;
-                        let y = (idx / 10) as u8;
-                        if (1..=8).contains(&x) && (1..=8).contains(&y) {
-                            let col = x - 1;
-                            let row = y - 1;
-                            let half_offset = if col >= 4 { 32 } else { 0 };
-                            let c = (col & 3) as usize;
-                            Some(half_offset + (row as usize * 4) + c)
-                        } else {
-                            None
-                        }
-                    } else if idx < 64 {
-                        let row = (idx / 8) as u8;
-                        let col = (idx % 8) as u8;
-                        let half_offset = if col >= 4 { 32 } else { 0 };
-                        let c = (col & 3) as usize;
-                        Some(half_offset + (row as usize * 4) + c)
-                    } else {
-                        None
-                    };
-
-                    if let Some(btn) = btn_opt
-                        && btn < 64
-                    {
-                        let color = Color::new(r, g, b);
-                        host_leds[btn * 2] = color;
-                        host_leds[btn * 2 + 1] = color;
-                        *modified = true;
-                    }
-                }
+                crate::midi::mystrix::apply_leds(payload, host_leds, modified);
             }
             _ => {}
-        }
-    }
-
-    fn send_sysex(&self, data: &[u8]) {
-        let mut i = 0;
-        let len = data.len();
-
-        while i < len {
-            let remain = len - i;
-            let packet: [u8; 4] = if remain >= 3 {
-                if i == 0 {
-                    [0x4, data[i], data[i + 1], data[i + 2]] // SysEx Start
-                } else if remain == 3 && data[i + 2] == 0xF7 {
-                    [0x7, data[i], data[i + 1], data[i + 2]] // SysEx End with 3 bytes
-                } else {
-                    [0x4, data[i], data[i + 1], data[i + 2]] // SysEx Continue
-                }
-            } else if remain == 2 {
-                [0x6, data[i], data[i + 1], 0] // SysEx End with 2 bytes
-            } else {
-                [0x5, data[i], 0, 0] // SysEx End with 1 byte
-            };
-
-            while crate::usb::send_raw_packet(packet).is_err() {
-                crate::usb::poll();
-            }
-
-            i += 3;
         }
     }
 }

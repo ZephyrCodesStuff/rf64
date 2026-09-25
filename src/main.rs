@@ -2,30 +2,33 @@
 #![no_main]
 #![feature(asm_experimental_arch)]
 
-#[cfg(feature = "boot-anim")]
-mod boot_anim;
-mod bootloader;
-mod buttons;
-mod delay;
-#[cfg(feature = "apollo")]
-mod fastled;
-mod gpio;
+/*
+todo (lots of stuff)
+
+refactor main while loop (it's a damn mess)
+try implementing middleware/hal separation
+implement testing for the logic (separate logic as much as possible from hw state)
+reduce local variable hell
+*/
+
+mod boot;
+mod midi;
+mod usb;
+
 #[cfg(feature = "instrumentation")]
 mod instrumentation;
-#[cfg(feature = "keyboard")]
-mod keyboard;
+
+mod buttons;
+mod delay;
+mod gpio;
+
 mod led;
-mod mcu;
-mod midi;
-mod palette;
-#[cfg(feature = "apollo")]
-mod sysex;
-mod usb;
+mod rng;
 
 use buttons::{ButtonMatrix, Debouncer};
 use gpio::LedPins;
 use led::{Color, LedDriver};
-use midi::{send_button_events, MidiRx};
+use midi::{MidiRx, send_button_events};
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
@@ -47,7 +50,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     let led_driver = LedDriver::new();
     led_driver.send_checkerboard_direct(par_buf, Color::RED);
 
-    #[allow(clippy::empty_loop, reason = "Panic handler should never return")]
+    #[allow(clippy::empty_loop, reason = "panic handler should never return")]
     loop {
         core::hint::spin_loop();
     }
@@ -66,11 +69,11 @@ static mut HOST_LEDS: [led::Color; led::TOTAL_LEDS] = [led::Color::BLACK; led::T
 
 /// SysEx Parser State Machine & Buffer. In BSS to prevent stack overflow.
 #[cfg(feature = "apollo")]
-static mut SYSEX_PARSER: sysex::SysExParser = sysex::SysExParser::new();
+static mut SYSEX_PARSER: crate::midi::sysex::SysExParser = crate::midi::sysex::SysExParser::new();
 
 /// Snake boot animation state. In BSS (~80 bytes) to keep it off main()'s stack frame.
 #[cfg(feature = "boot-anim")]
-static mut SNAKE_SIM: boot_anim::SnakeSim = boot_anim::SnakeSim::new();
+static mut SNAKE_SIM: crate::boot::snake::SnakeSim = crate::boot::snake::SnakeSim::new();
 
 /// Debounced button state. In BSS (~144 bytes) to keep it off main()'s stack frame.
 static mut DEBOUNCER: Debouncer = Debouncer::new();
@@ -96,7 +99,7 @@ fn main() -> ! {
     let dp = atmega_hal::Peripherals::take().expect("could not take peripherals");
 
     // Check if the user has requested to jump to bootloader
-    bootloader::check_bootloader_requested(&dp);
+    crate::boot::bootloader::check_bootloader_requested(&dp);
 
     // Set clock to max speed (16 MHz)
     //
@@ -115,6 +118,11 @@ fn main() -> ! {
     // -------------------------------------------------------------------------
     LedPins::setup(&dp.PORTB, &dp.PORTC);
 
+    #[cfg(feature = "boot-anim")]
+    let snake_sim = unsafe { &mut *core::ptr::addr_of_mut!(SNAKE_SIM) };
+    #[cfg(feature = "boot-anim")]
+    snake_sim.seed(rng::get_wdt_jitter_entropy(&dp));
+
     // Initialize Timer1 as a free-running 16-bit monotonic counter
     // Prescaler 1024 => 15,625 Hz at 16 MHz (1 tick = 64 µs, wraps every ~4.19s)
     dp.TC1.tccr1b().write(|w| unsafe { w.bits(0x05) });
@@ -132,14 +140,14 @@ fn main() -> ! {
     let initial_buttons = button_matrix.read_raw();
 
     // Jump into DFU bootloader if Button 0 (bit 0) is held down at startup
-    if bootloader::bootloader_combo_held(initial_buttons) {
+    if crate::boot::bootloader::bootloader_combo_held(initial_buttons) {
         // Signal bootloader entry with orange checkerboard — zero stack allocation.
         let par_buf = unsafe { &mut *core::ptr::addr_of_mut!(PAR_BUF) };
         led_driver.send_checkerboard_direct(par_buf, Color::ORANGE);
 
         // SAFETY: we aren't touching pins or buttons, only the watchdog
         let p = unsafe { atmega_hal::Peripherals::steal() };
-        bootloader::request_bootloader(&p);
+        crate::boot::bootloader::request_bootloader(&p);
     }
 
     // DEBUG: Trigger a panic if Button 1 (2nd button, bit 1) is held down at startup
@@ -150,7 +158,7 @@ fn main() -> ! {
 
     // 3rd button held on boot (bit 2) -> USB HID Keyboard Emulation Mode
     #[cfg(feature = "keyboard")]
-    let is_keyboard_mode = (initial_buttons & 0b100) != 0;
+    let is_keyboard_mode = usb::keyboard::keyboard_combo_held(initial_buttons);
 
     // Initialize 48MHz USB PLL and corresponding USB stack
     usb::init_usb_pll();
@@ -173,10 +181,6 @@ fn main() -> ! {
     // SAFETY: single-threaded; all statics are only accessed from this function.
     let host_leds = unsafe { &mut *core::ptr::addr_of_mut!(HOST_LEDS) };
     let debouncer = unsafe { &mut *core::ptr::addr_of_mut!(DEBOUNCER) };
-    #[cfg(feature = "boot-anim")]
-    let snake_sim = unsafe { &mut *core::ptr::addr_of_mut!(SNAKE_SIM) };
-    #[cfg(feature = "boot-anim")]
-    snake_sim.seed(mcu::get_wdt_jitter_entropy());
 
     // -------------------------------------------------------------------------
     // 3. Keyboard Mode Loop (if activated on boot)
@@ -187,9 +191,8 @@ fn main() -> ! {
 
         // Render initial category background colors for all buttons (~10% brightness)
         for btn in 0..64 {
-            let color = keyboard::get_button_color(btn, false, false);
-            host_leds[btn * 2] = color;
-            host_leds[btn * 2 + 1] = color;
+            let color = usb::keyboard::get_button_color(btn, false, false);
+            led::set_button_color(host_leds, btn, color);
         }
         let par_buf = unsafe { &mut *core::ptr::addr_of_mut!(PAR_BUF) };
         led_driver.render_frame(par_buf, host_leds);
@@ -203,13 +206,13 @@ fn main() -> ! {
             let raw_buttons = button_matrix.read_raw();
             let _ = debouncer.update(raw_buttons, now_tick);
 
-            let (report, is_fn_pressed) = keyboard::build_keyboard_report(debouncer.state);
+            let (report, is_fn_pressed) = usb::keyboard::build_keyboard_report(debouncer.state);
 
             let fn_changed = is_fn_pressed != prev_fn_pressed;
             let report_changed = report != prev_report;
 
             if report_changed {
-                let _ = crate::usb::send_keyboard_report(&report);
+                let _ = usb::keyboard::send_report(&report);
                 prev_report = report;
             }
 
@@ -221,9 +224,8 @@ fn main() -> ! {
                 // Colors change dynamically based on active layer!
                 for btn in 0..64 {
                     let is_pressed = (debouncer.state & (1u64 << btn)) != 0;
-                    let color = keyboard::get_button_color(btn, is_pressed, is_fn_pressed);
-                    host_leds[btn * 2] = color;
-                    host_leds[btn * 2 + 1] = color;
+                    let color = usb::keyboard::get_button_color(btn, is_pressed, is_fn_pressed);
+                    led::set_button_color(host_leds, btn, color);
                 }
                 let par_buf = unsafe { &mut *core::ptr::addr_of_mut!(PAR_BUF) };
                 led_driver.render_frame(par_buf, host_leds);
@@ -295,12 +297,7 @@ fn main() -> ! {
         });
         #[cfg(feature = "instrumentation")]
         {
-            let elapsed = dp
-                .TC1
-                .tcnt1()
-                .read()
-                .bits()
-                .wrapping_sub(midi_started_tick);
+            let elapsed = dp.TC1.tcnt1().read().bits().wrapping_sub(midi_started_tick);
             let metrics = unsafe { &mut *core::ptr::addr_of_mut!(METRICS) };
             instrumentation::TraceSink::event(
                 metrics,

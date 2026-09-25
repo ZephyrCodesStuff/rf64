@@ -9,7 +9,12 @@
 //! Tick values use the Timer1 64 µs unit; frame and MIDI totals cover one
 //! approximately one-second reporting interval.
 
-use crate::usb;
+/*
+todo
+
+use a proper tracing framework for embedded no-alloc no-std envs instead of our own
+simply implement a midi sysex exporter (or better yet, something via usb?) in the trait for exporting
+*/
 
 const REPORT_INTERVAL_TICKS: u16 = 15_625; // 1 second at 64 µs per Timer1 tick
 const REPORT_LEN: usize = 20;
@@ -77,7 +82,7 @@ impl ReportTransport for MidiSysExTransport {
             & 0x7F;
         bytes[19] = 0xF7;
 
-        send_sysex(&bytes);
+        crate::usb::midi::send_sysex(&bytes);
     }
 }
 
@@ -171,29 +176,4 @@ impl TraceSink for Metrics {
 const fn put_u14(bytes: &mut [u8; REPORT_LEN], at: usize, value: u16) {
     bytes[at] = value as u8 & 0x7F;
     bytes[at + 1] = (value >> 7) as u8 & 0x7F;
-}
-
-fn send_sysex(data: &[u8]) {
-    let mut i = 0;
-    while i < data.len() {
-        let remaining = data.len() - i;
-        let packet = if remaining >= 3 {
-            if i == 0 {
-                [0x4, data[i], data[i + 1], data[i + 2]]
-            } else if remaining == 3 {
-                [0x7, data[i], data[i + 1], data[i + 2]]
-            } else {
-                [0x4, data[i], data[i + 1], data[i + 2]]
-            }
-        } else if remaining == 2 {
-            [0x6, data[i], data[i + 1], 0]
-        } else {
-            [0x5, data[i], 0, 0]
-        };
-
-        while usb::send_raw_packet(packet).is_err() {
-            usb::poll();
-        }
-        i += 3;
-    }
 }

@@ -49,29 +49,8 @@ fn note_from_u8(n: u8) -> Note {
 
 /// Send MIDI NoteOn/NoteOff for button state transitions.
 pub fn send_button_events(pressed_mask: u64, released_mask: u64) {
-    if pressed_mask == 0 && released_mask == 0 {
-        return;
-    }
-
-    for (byte_idx, &byte) in pressed_mask.to_le_bytes().iter().enumerate() {
-        let mut b = byte;
-        while b != 0 {
-            let bit = b.trailing_zeros() as u8;
-            let btn = ((byte_idx as u8) << 3) | bit;
-            send_button_event(btn, true);
-            b &= b - 1;
-        }
-    }
-
-    for (byte_idx, &byte) in released_mask.to_le_bytes().iter().enumerate() {
-        let mut b = byte;
-        while b != 0 {
-            let bit = b.trailing_zeros() as u8;
-            let btn = ((byte_idx as u8) << 3) | bit;
-            send_button_event(btn, false);
-            b &= b - 1;
-        }
-    }
+    crate::buttons::for_each_button(pressed_mask, |btn| send_button_event(btn, true));
+    crate::buttons::for_each_button(released_mask, |btn| send_button_event(btn, false));
 }
 
 /// Send a single NoteOn or NoteOff event for a button with retry logic on USB buffer full.
@@ -98,7 +77,7 @@ pub fn send_button_event(btn: u8, pressed: bool) {
                 )
             },
         };
-        if crate::usb::send_raw_packet(packet.into()).is_ok() {
+        if crate::usb::midi::send_raw_packet(packet.into()).is_ok() {
             break;
         }
         crate::usb::poll(); // flush the TX endpoint and retry
@@ -205,7 +184,9 @@ impl MidiRx {
         &mut self,
         host_leds: &mut [crate::led::Color; crate::led::TOTAL_LEDS],
         animating: &mut bool,
-        #[cfg(feature = "apollo")] mut sysex_parser_opt: Option<&mut crate::sysex::SysExParser>,
+        #[cfg(feature = "apollo")] mut sysex_parser_opt: Option<
+            &mut crate::midi::sysex::SysExParser,
+        >,
         #[cfg(not(feature = "apollo"))] _sysex_parser_opt: Option<&mut ()>,
         mut read_timer_tick: impl FnMut() -> u16,
     ) -> MidiBatch {
@@ -219,7 +200,7 @@ impl MidiRx {
         loop {
             crate::usb::poll();
             let mut read_any = false;
-            while let Some(packet) = crate::usb::read_packet() {
+            while let Some(packet) = crate::usb::midi::read_packet() {
                 #[cfg(feature = "instrumentation")]
                 {
                     packets = packets.saturating_add(1);
@@ -288,7 +269,8 @@ impl MidiRx {
 
                         let base_led = btn * 2;
                         if is_on {
-                            let color = crate::palette::ABLETON_COLORS.load_at(velocity as usize);
+                            let color =
+                                crate::midi::palette::ABLETON_COLORS.load_at(velocity as usize);
                             match channel {
                                 2 => {
                                     self.cancel_note_off(base_led);

@@ -4,6 +4,12 @@ use atmega_hal::prelude::*;
 
 pub type Delay = atmega_hal::delay::Delay<atmega_hal::clock::MHz16>;
 
+/*
+todo
+
+these delays are pure busy-loop implementations; can we do better with timers and callbacks maybe?
+*/
+
 #[inline(always)]
 pub fn delay_us(us: u16) {
     Delay::new().delay_us(us);

@@ -18,7 +18,9 @@
 //!   full-step (tick 32) commits the move.
 //! - Progressive apple eating: entry LED flips to head green while exit LED remains apple red.
 
+use crate::buttons::cell_to_btn;
 use crate::led::{Color, TOTAL_LEDS};
+use crate::rng::next_rand;
 
 // ── Color palette ─────────────────────────────────────────────────────────────
 
@@ -42,14 +44,6 @@ enum Dir {
 }
 
 // ── Layout & Hamiltonian cycle mapping ───────────────────────────────────────
-
-/// Map spatial grid cell `(row, col)` to physical button index `0..63`.
-#[inline(always)]
-const fn cell_to_btn(row: u8, col: u8) -> usize {
-    let half_offset = if col >= 4 { 32 } else { 0 };
-    let c = (col & 3) as usize;
-    half_offset + (row as usize * 4) + c
-}
 
 const POS_TO_CELL_LUT: [u8; 64] = {
     let mut lut = [0; 64];
@@ -75,31 +69,10 @@ const POS_TO_CELL_LUT: [u8; 64] = {
 
 const CELL_TO_POS_LUT: [u8; 64] = {
     let mut lut = [0; 64];
-    let mut r = 0;
-    while r < 8 {
-        let mut c = 0;
-        while c < 8 {
-            let pos = match (r, c) {
-                (0, c) => c,
-                (1, 0) => 63,
-                (1, c) => 8 + (7 - c),
-                (2, 0) => 62,
-                (2, c) => 15 + (c - 1),
-                (3, 0) => 61,
-                (3, c) => 22 + (7 - c),
-                (4, 0) => 60,
-                (4, c) => 29 + (c - 1),
-                (5, 0) => 59,
-                (5, c) => 36 + (7 - c),
-                (6, 0) => 58,
-                (6, c) => 43 + (c - 1),
-                (7, c) => 50 + (7 - c),
-                _ => 0,
-            };
-            lut[((r << 3) | c) as usize] = pos;
-            c += 1;
-        }
-        r += 1;
+    let mut pos = 0;
+    while pos < 64 {
+        lut[POS_TO_CELL_LUT[pos] as usize] = pos as u8;
+        pos += 1;
     }
     lut
 };
@@ -146,12 +119,6 @@ const fn get_dir(from_pos: u8, to_pos: u8) -> Dir {
     }
 }
 
-// ── 16-bit Linear Congruential Generator ─────────────────────────────────────
-
-#[inline(always)]
-const fn next_rand(s: u16) -> u16 {
-    s.wrapping_mul(25173).wrapping_add(13849)
-}
 
 // ── Tuning constants ──────────────────────────────────────────────────────────
 
@@ -401,15 +368,13 @@ impl SnakeSim {
                 n if n % 2 == 1 => COLOR_BODY_LIGHT,
                 _ => COLOR_BODY_DARK,
             };
-            host_leds[btn * 2] = color;
-            host_leds[btn * 2 + 1] = color;
+            crate::led::set_button_color(host_leds, btn, color);
         }
 
         // 2. Paint Apple
         let (ar, ac) = pos_to_cell(self.apple_path);
         let apple_btn = cell_to_btn(ar, ac);
-        host_leds[apple_btn * 2] = COLOR_APPLE;
-        host_leds[apple_btn * 2 + 1] = COLOR_APPLE;
+        crate::led::set_button_color(host_leds, apple_btn, COLOR_APPLE);
 
         // 3. Half-step smoothing
         if self.sub_step {
